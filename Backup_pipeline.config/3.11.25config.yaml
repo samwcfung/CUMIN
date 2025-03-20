@@ -1,0 +1,89 @@
+# Configuration for Fluorescence Analysis Pipeline
+
+preprocessing:
+  correction_method: "downsample_and_detrend"  # New method for spatial downsampling and detrending
+  downsample_factor: 2                # Options: 2 for 2×2, 4 for 4×4 bilinear interpolation
+  polynomial_order: 3                 # Order of polynomial (1 for linear, 3 for cubic)
+  smoothing_sigma: 2.0                # Gaussian smoothing sigma
+  use_gpu: false                      # Use GPU acceleration if available
+  
+  # Keep the other parameters for when using different methods
+  cutoff_freq: 0.001                  # Cutoff frequency for lowpass filter
+  temporal_filter_order: 2            # Order of Butterworth filter
+  spatial_hp_sigma: 2.0               # Spatial high-pass filter sigma (0 to disable)
+  median_filter_size: 3               # Size of median filter for noise reduction
+  use_roi_masks: true                 # Use ROI masks for CNMF-E initialization
+  
+  # CNMF-E specific parameters (if using cnmf_e method)
+  cnmf_e:
+    min_corr: 0.8                     # Minimum correlation for component detection
+    min_pnr: 10                       # Minimum peak-to-noise ratio
+    gSig: [3, 3]                      # Expected half-size of neurons
+    ring_size_factor: 1.4             # Factor to enlarge ring for background estimation
+    merge_thresh: 0.7                 # Merging threshold for components
+
+roi_processing:
+  # Enable ROI refinement with CNMF-E
+  refine_rois: true                   # Set to true to enable ROI refinement
+
+  # New optimization settings
+  optimization:
+    spatial_downsample: 2      # Downsample spatially by 2x (adjust as needed)
+    use_float16: true          # Use float16 instead of float32 
+    simplified_mode: true      # Use simplified/faster processing
+  
+  # CNMF-E parameters for ROI refinement
+  cnmf_e:
+    min_corr: 0.8                     # Minimum correlation
+    min_pnr: 10                       # Minimum peak-to-noise ratio
+    gSig: [3, 3]                      # Expected half-size of neurons
+    gSiz: [7, 7]                      # Full size of neuron bounding box (or leave blank for auto)
+    ring_size_factor: 1.4             # Factor to determine ring size
+    merge_thresh: 0.7                 # Threshold for merging components
+  
+  # Use multiple processes for CNMF-E computation
+  use_multiprocessing: true
+  n_processes: 4                      # Number of processes to use
+  
+  # Background subtraction parameters
+  background:
+    method: "roi_periphery"           # Options: darkest_pixels, roi_periphery, cnmf_background, lowpass_filter
+    periphery_size: 2                 # Size of ROI periphery for local background
+    percentile: 0.1                   # For darkest_pixels method
+    median_filter_size: 3             # For pixel noise reduction
+    dilation_size: 2                  # For expanding background mask
+    cutoff_freq: 0.001                # For lowpass_filter method
+    filter_order: 2                   # For lowpass_filter method
+
+analysis:
+  frame_rate: 30.0                    # Acquisition frame rate in Hz
+  event_detection:
+    threshold: 2.0                    # Standard deviations above baseline
+    min_duration: 3                   # Minimum event duration in frames
+    baseline_percentile: 10           # Percentile to use for baseline estimation
+  
+  # Quality control thresholds
+  qc_thresholds:
+    min_snr: 1.5                      # Minimum signal-to-noise ratio
+    max_baseline_var: 15.0            # Maximum baseline variance (%)
+    min_event_count: 1                # Minimum events per minute
+    max_motion_correlation: 0.6       # Maximum correlation with motion trace
+
+visualization:
+  roi_color_map: "viridis"            # Colormap for ROI visualization
+  trace_color: "#1f77b4"              # Color for fluorescence traces
+  event_color: "#d62728"              # Color for detected events
+  save_individual_plots: true         # Save individual ROI plots
+  save_summary_plots: true            # Save summary plots
+  plot_types:                         # Plot types to generate
+    - "roi_map"                       # ROI spatial map
+    - "trace_overlay"                 # All traces overlaid
+    - "event_summary"                 # Event rate summary
+    - "quality_metrics"               # Quality control metrics
+
+advanced_analysis:
+  enabled: false                      # Enable advanced analysis
+  methods:
+    - "correlation"                   # ROI correlation analysis
+    - "clustering"                    # Hierarchical clustering of ROIs
+    - "population_activity"           # Population activity analysis

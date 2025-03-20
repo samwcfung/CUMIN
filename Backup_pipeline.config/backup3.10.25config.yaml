@@ -1,0 +1,112 @@
+# Fluorescence Analysis Pipeline Configuration
+# --------------------------------------------
+# Preprocessing settings
+preprocessing:
+  correction_method: "cnmf_e"   # Using CNMF-E for microendoscopic data
+  use_roi_masks: true           # Use ROIs to initialize CNMF-E
+  num_components: 30            # Number of components for CNMF-E to find
+  smoothing_sigma: 2.0          # Spatial smoothing
+  use_multiprocessing: true     # Enable multiprocessing for CNMF-E
+  n_processes: 4                # Number of processes for parallel processing
+  
+  # CNMF-E specific parameters 
+  cnmf_e:
+    min_corr: 0.8               # Minimum correlation for component detection
+    min_pnr: 10                 # Minimum peak-to-noise ratio
+    gSig: [4, 4]                # Expected half-size of neurons
+    gSiz: [15, 15]              # Expected full size of neurons
+    ring_size_factor: 1.5       # Factor to enlarge the ring (microendoscope specific)
+    merge_thresh: 0.8           # Threshold for merging components
+
+  # Parameters for fallback methods (if CNMF-E fails)
+  cutoff_freq: 0.001            # For lowpass filter method
+  polynomial_order: 1           # For polynomial detrend method
+  apply_cnmf: false             # Don't apply CNMF as a secondary step
+  use_gpu: false                # GPU disabled
+
+# ROI processing settings
+roi_processing:
+  # Background subtraction settings
+  background:
+    # Method: "darkest_pixels", "roi_periphery", or "cnmf_background"
+    method: "cnmf_background"   # Use CNMF-E's background separation
+    # Fallback parameters (if CNMF-E is not used)
+    percentile: 0.1
+    median_filter_size: 3
+    dilation_size: 2
+    periphery_size: 2
+
+# Fluorescence analysis settings
+analysis:
+  # Frame ranges
+  baseline_frames: [0, 200]
+  analysis_frames: [233, 580]
+  
+  # Threshold for classifying ROIs as "active"
+  active_threshold: 0.1
+  
+  # Peak detection parameters
+  peak_detection:
+    # Minimum prominence for peak detection
+    prominence: 0.1
+    # Minimum width for peak detection
+    width: 3
+  
+  # Spontaneous activity detection
+  spontaneous_activity:
+    # Minimum prominence for spontaneous peak detection
+    prominence: 0.05
+    # Minimum width for spontaneous peak detection
+    width: 2
+  
+  # QC thresholds
+  qc_thresholds:
+    # Minimum variance for valid ROIs
+    min_variance: 0.01
+    # Maximum allowed jump in fluorescence intensity
+    max_jump: 0.5
+    # Maximum allowed baseline drift
+    max_drift: 0.3
+
+# Advanced analysis settings
+advanced_analysis:
+  # Enable or disable all advanced analysis
+  enabled: true
+  
+  # Machine learning classification of ROI activity patterns
+  ml_enabled: true
+  ml:
+    # LDA is automatically used when pain_model labels are available
+    # Otherwise falls back to PCA+KMeans
+    # Number of clusters for k-means (used only when LDA is not possible)
+    n_clusters: 3
+    # Features to use for classification
+    feature_selection: ["peak_amplitude", "rise_time", "std_df_f", "spont_peak_frequency", "distance_to_lamina"]
+  
+  # Correlation analysis between nearby ROIs
+  correlation_enabled: true
+  correlation:
+    # Maximum distance (pixels) for considering ROIs as "nearby"
+    distance_threshold: 50
+    # Correlation method: "pearson" or "spearman"
+    method: "pearson"
+  
+  # Earth Mover's Distance (EMD) for pain models
+  emd_enabled: true
+  emd:
+    # Features to analyze with EMD
+    features: ["peak_amplitude", "std_df_f", "spont_avg_peak_amplitude"]
+    # Number of bins for histogram creation
+    n_bins: 20
+
+# Visualization settings
+visualization:
+  # Frame ranges (should match analysis settings)
+  baseline_frames: [0, 200]
+  analysis_frames: [233, 580]
+  
+  # Colormap for fluorescence heatmap
+  heatmap_colormap: "viridis"
+  
+  # Limit of ROIs to show in summary visualizations
+  max_rois_to_display: 20
