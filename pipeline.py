@@ -104,6 +104,15 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
         metadata = extract_metadata_from_filename(slice_name)
         slice_logger.info(f"Extracted metadata: {metadata}")
         
+        # Log condition-specific processing
+        condition = metadata.get("condition", "unknown")
+        if condition == "0um":
+            slice_logger.info("Condition 0um detected: Will analyze for spontaneous activity only (frames 0-580)")
+        elif condition in ["10um", "25um"]:
+            slice_logger.info(f"Condition {condition} detected: Will analyze for evoked activity only (frames 100-580)")
+        else:
+            slice_logger.info(f"Unknown condition '{condition}': Will use default analysis parameters")
+            
         # Preprocessing
         corrected_data = None
         image_shape = None
@@ -472,19 +481,21 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
                     }
                 }
         
-        # Fluorescence analysis
+        # Fluorescence analysis - pass metadata to enable condition-specific logic
         if mode in ["all", "analyze"]:
             analysis_start = time.time()
             slice_logger.info("Starting fluorescence analysis")
             
-            # Analyze fluorescence data
-            metrics_df = analyze_fluorescence(
+            # Analyze fluorescence data - pass metadata parameter
+            # Now returns both metrics and dF/F traces
+            metrics_df, df_f_traces = analyze_fluorescence(
                 bg_corrected_data, 
                 roi_masks,
                 tif_path,  # For original image
                 config["analysis"],
                 slice_logger,
-                output_dir=slice_output_dir
+                output_dir=slice_output_dir,
+                metadata=metadata  # Pass metadata to enable condition-specific logic
             )
             
             # Add metadata columns
@@ -503,17 +514,23 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
             metrics_file = os.path.join(slice_output_dir, f"{slice_name}_metrics.xlsx")
             metrics_df.to_excel(metrics_file, index=False)
             
+            # Also save as CSV for easier processing
+            csv_file = os.path.join(slice_output_dir, f"{slice_name}_metrics.csv")
+            metrics_df.to_csv(csv_file, index=False)
+            slice_logger.info(f"Saved metrics to CSV: {csv_file}")
+            
             # Generate verification visualizations
             slice_logger.info("Generating visualizations")
             generate_visualizations(
-                bg_corrected_data,
+                df_f_traces,  # Use dF/F traces instead of background-subtracted data
                 roi_masks,
                 metrics_df,
                 flagged_rois,
                 tif_path,
                 slice_output_dir,
                 config["visualization"],
-                slice_logger
+                slice_logger,
+                metadata=metadata  # Pass metadata for condition-specific visualization
             )
             
             analysis_time = time.time() - analysis_start

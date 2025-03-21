@@ -19,562 +19,658 @@ import tifffile
 import cv2
 
 def generate_visualizations(
-    fluorescence_data, 
-    roi_masks, 
-    metrics_df, 
-    flagged_rois, 
-    original_image_path, 
-    output_dir, 
-    vis_config, 
-    logger
+    df_f_traces,  # Renamed from fluorescence_data to df_f_traces
+    roi_masks,
+    metrics_df,
+    flagged_rois,
+    tif_path,
+    output_dir,
+    config,
+    logger,
+    metadata=None  # Add metadata parameter
 ):
     """
-    Generate visualizations for verification and QC.
+    Generate visualizations for fluorescence data analysis.
     
     Parameters
     ----------
-    fluorescence_data : numpy.ndarray
-        Background-corrected fluorescence traces with shape (n_rois, n_frames)
+    df_f_traces : numpy.ndarray
+        dF/F traces (baseline normalized to 0) with shape (n_rois, n_frames)
     roi_masks : list
         List of ROI masks
     metrics_df : pandas.DataFrame
         DataFrame containing metrics for each ROI
     flagged_rois : list
-        List of flagged ROI IDs with issues
-    original_image_path : str
+        List of ROI IDs with quality issues
+    tif_path : str
         Path to the original .tif image
     output_dir : str
-        Directory to save the visualizations
-    vis_config : dict
-        Visualization configuration parameters
+        Directory to save visualizations
+    config : dict
+        Visualization configuration
     logger : logging.Logger
         Logger object
+    metadata : dict, optional
+        Metadata dictionary with condition information
     """
-    start_time = time.time()
-    logger.info("Generating visualizations")
+    logger.info("Generating visualizations using dF/F traces")
     
-    # Create directory for visualizations
+    # Get condition from metadata if available
+    condition = metadata.get("condition", "unknown") if metadata else "unknown"
+    logger.info(f"Generating visualizations for condition: {condition}")
+    
+    # Create visualization directory
     vis_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(vis_dir, exist_ok=True)
     
-    # Extract visualization settings
-    baseline_frames = vis_config.get("baseline_frames", [0, 200])
-    analysis_frames = vis_config.get("analysis_frames", [233, 580])
+    # Create plot types based on condition
+    plot_types = config.get("plot_types", ["roi_map", "trace_overlay", "event_summary"])
     
-    # 1. Generate fluorescence heatmap
-    generate_fluorescence_heatmap(
-        fluorescence_data,
-        baseline_frames,
-        analysis_frames,
-        os.path.join(vis_dir, "fluorescence_heatmap.png"),
-        logger
-    )
+    # Condition-specific visualization adjustments
+    if condition == "0um":
+        logger.info("Generating spontaneous activity visualizations for 0um condition")
+        # For 0um, focus on spontaneous activity in the visualizations
+        title_suffix = " (Spontaneous Activity)"
+        if "trace_overlay" in plot_types:
+            # Create spontaneous activity overlay
+            create_trace_overlay(
+                df_f_traces,  # FIXED: Using df_f_traces instead of fluorescence_data 
+                metrics_df, 
+                os.path.join(vis_dir, "spontaneous_trace_overlay.png"),
+                title=f"Fluorescence Traces{title_suffix}",
+                highlight_frame_range=None,  # No specific highlight region for spontaneous
+                logger=logger
+            )
+    elif condition in ["10um", "25um"]:
+        logger.info(f"Generating evoked activity visualizations for {condition} condition")
+        # For 10um and 25um, focus on evoked activity in the visualizations
+        title_suffix = f" (Evoked Activity - {condition})"
+        if "trace_overlay" in plot_types:
+            # Create evoked activity overlay with highlighted region
+            create_trace_overlay(
+                df_f_traces,  # FIXED: Using df_f_traces instead of fluorescence_data
+                metrics_df, 
+                os.path.join(vis_dir, "evoked_trace_overlay.png"),
+                title=f"Fluorescence Traces{title_suffix}",
+                highlight_frame_range=[100, 580],  # Highlight the evoked activity region
+                logger=logger
+            )
+    else:
+        # Default visualizations
+        title_suffix = ""
+        if "trace_overlay" in plot_types:
+            create_trace_overlay(
+                df_f_traces,  # FIXED: Using df_f_traces instead of fluorescence_data
+                metrics_df, 
+                os.path.join(vis_dir, "trace_overlay.png"),
+                logger=logger
+            )
     
-    # 2. Plot traces for randomly selected ROIs
-    generate_random_roi_traces(
-        fluorescence_data,
-        baseline_frames,
-        analysis_frames,
-        os.path.join(vis_dir, "random_roi_traces.png"),
-        logger
-    )
-    
-    # 3. Overlay ROI masks on original image
-    generate_roi_overlay(
-        roi_masks,
-        original_image_path,
-        os.path.join(vis_dir, "roi_overlay.png"),
-        flagged_rois,
-        logger
-    )
-    
-    # 4. Generate time-series overlays comparing spontaneous vs. evoked responses
-    generate_response_comparison(
-        fluorescence_data,
-        metrics_df,
-        baseline_frames,
-        analysis_frames,
-        os.path.join(vis_dir, "response_comparison.png"),
-        logger
-    )
-    
-    # 5. Generate QC summary report
-    generate_qc_report(
-        flagged_rois,
-        fluorescence_data,
-        os.path.join(vis_dir, "qc_report.png"),
-        logger
-    )
-    
-    logger.info(f"Visualization generation completed in {time.time() - start_time:.2f} seconds")
-
-def generate_fluorescence_heatmap(
-    fluorescence_data, 
-    baseline_frames, 
-    analysis_frames, 
-    output_path, 
-    logger
-):
-    """
-    Generate a heatmap of fluorescence intensities across ROIs.
-    
-    Parameters
-    ----------
-    fluorescence_data : numpy.ndarray
-        Background-corrected fluorescence traces with shape (n_rois, n_frames)
-    baseline_frames : list
-        [start, end] frames for baseline
-    analysis_frames : list
-        [start, end] frames for analysis
-    output_path : str
-        Path to save the visualization
-    logger : logging.Logger
-        Logger object
-    """
-    n_rois, n_frames = fluorescence_data.shape
-    
-    # Check if we have data to plot
-    if n_rois == 0 or n_frames == 0:
-        logger.warning("No data to plot for heatmap visualization")
-        # Create a dummy figure with a message
-        plt.figure(figsize=(10, 6))
-        plt.text(0.5, 0.5, "No fluorescence data available for heatmap", 
-                 horizontalalignment='center', verticalalignment='center',
-                 transform=plt.gca().transAxes, fontsize=14)
-        plt.savefig(output_path, dpi=300)
-        plt.close()
-        return
-    
-    # Normalize each ROI by its baseline
-    normalized_data = np.zeros_like(fluorescence_data)
-    
-    for i in range(n_rois):
-        # Calculate baseline window, ensuring it's valid
-        baseline_start = max(0, min(baseline_frames[0], n_frames-1))
-        baseline_end = max(baseline_start, min(baseline_frames[1], n_frames-1))
-        
-        if baseline_end >= baseline_start:
-            baseline = np.mean(fluorescence_data[i, baseline_start:baseline_end+1])
-            # Normalize, avoiding division by zero
-            if baseline != 0:
-                normalized_data[i] = (fluorescence_data[i] - baseline) / baseline
+    # Generate additional plots based on the plot_types configuration
+    for plot_type in plot_types:
+        if plot_type == "roi_map":
+            create_roi_map(
+                roi_masks,
+                metrics_df,
+                tif_path,
+                os.path.join(vis_dir, f"roi_map{title_suffix.replace(' ', '_')}.png"),
+                colormap=config.get("roi_color_map", "viridis"),
+                logger=logger
+            )
+        elif plot_type == "event_summary":
+            # For event summary, adjust based on condition
+            if condition == "0um":
+                # For 0um, focus on spontaneous activity metrics
+                create_event_summary(
+                    metrics_df,
+                    os.path.join(vis_dir, f"spontaneous_event_summary.png"),
+                    title=f"Spontaneous Activity Summary{title_suffix}",
+                    x_metric="spont_peak_frequency",
+                    y_metric="spont_avg_peak_amplitude",
+                    color_metric="is_active",
+                    logger=logger
+                )
+            elif condition in ["10um", "25um"]:
+                # For 10um and 25um, focus on evoked activity metrics
+                create_event_summary(
+                    metrics_df,
+                    os.path.join(vis_dir, f"evoked_event_summary.png"),
+                    title=f"Evoked Activity Summary{title_suffix}",
+                    x_metric="peak_amplitude",
+                    y_metric="peak_area_under_curve",
+                    color_metric="is_active",
+                    logger=logger
+                )
             else:
-                normalized_data[i] = fluorescence_data[i]
-        else:
-            # If baseline window is invalid, just use raw data
-            normalized_data[i] = fluorescence_data[i]
+                # Default behavior
+                create_event_summary(
+                    metrics_df,
+                    os.path.join(vis_dir, f"event_summary.png"),
+                    logger=logger
+                )
+        elif plot_type == "quality_metrics":
+            create_quality_metrics_plot(
+                metrics_df,
+                flagged_rois,
+                os.path.join(vis_dir, f"quality_metrics{title_suffix.replace(' ', '_')}.png"),
+                logger=logger
+            )
     
-    # Create figure
-    plt.figure(figsize=(12, 8))
+    # Individual ROI plots if enabled
+    if config.get("save_individual_plots", True):
+        roi_plots_dir = os.path.join(vis_dir, "individual_rois")
+        os.makedirs(roi_plots_dir, exist_ok=True)
+        
+        for i in range(len(roi_masks)):
+            roi_id = i + 1
+            is_active = metrics_df.loc[metrics_df['roi_id'] == roi_id, 'is_active'].values[0]
+            
+            # Create different plot types based on condition
+            if condition == "0um":
+                create_individual_roi_plot(
+                    df_f_traces[i],  # FIXED: Using df_f_traces instead of fluorescence_data
+                    roi_id,
+                    is_active,
+                    os.path.join(roi_plots_dir, f"roi_{roi_id:03d}.png"),
+                    title=f"ROI {roi_id} - Spontaneous Activity",
+                    highlight_range=None,  # No highlight for spontaneous
+                    logger=logger
+                )
+            elif condition in ["10um", "25um"]:
+                create_individual_roi_plot(
+                    df_f_traces[i],  # FIXED: Using df_f_traces instead of fluorescence_data
+                    roi_id,
+                    is_active,
+                    os.path.join(roi_plots_dir, f"roi_{roi_id:03d}.png"),
+                    title=f"ROI {roi_id} - Evoked Activity",
+                    highlight_range=[100, 580],  # Highlight evoked activity region
+                    logger=logger
+                )
+            else:
+                create_individual_roi_plot(
+                    df_f_traces[i],  # FIXED: Using df_f_traces instead of fluorescence_data
+                    roi_id,
+                    is_active,
+                    os.path.join(roi_plots_dir, f"roi_{roi_id:03d}.png"),
+                    logger=logger
+                )
     
-    # Plot heatmap with seaborn if available, fall back to matplotlib
-    try:
-        import seaborn as sns
-        # This creates the mappable object for the colorbar
-        heatmap = sns.heatmap(
-            normalized_data, 
-            cmap='viridis', 
-            vmin=-0.2, 
-            vmax=0.5, 
-            xticklabels=50, 
-            yticklabels=5
-        )
-        # No need for separate colorbar - seaborn heatmap includes one
-    except (ImportError, Exception):
-        # Fall back to matplotlib imshow
-        heatmap = plt.imshow(
-            normalized_data, 
-            aspect='auto', 
-            cmap='viridis',
-            vmin=-0.2, 
-            vmax=0.5
-        )
-        plt.colorbar(heatmap, label='dF/F')
-    
-    # Add vertical lines for baseline and analysis windows
-    # Make sure we don't exceed array bounds
-    for frame in [min(baseline_frames[0], n_frames-1), 
-                  min(baseline_frames[1], n_frames-1),
-                  min(analysis_frames[0], n_frames-1), 
-                  min(analysis_frames[1], n_frames-1)]:
-        if 0 <= frame < n_frames:
-            # Use different colors for baseline and analysis
-            color = 'red' if frame in baseline_frames else 'blue'
-            plt.axvline(x=frame, color=color, linestyle='--', linewidth=1)
-    
-    # Add labels
-    plt.xlabel('Frame')
-    plt.ylabel('ROI')
-    plt.title('Fluorescence Intensity Heatmap (dF/F)')
-    
-    # Save figure
-    plt.tight_layout()
-    try:
-        plt.savefig(output_path, dpi=300)
-    except Exception as e:
-        logger.warning(f"Error saving heatmap figure: {str(e)}")
-    plt.close()
-    
-    logger.info(f"Saved fluorescence heatmap to {output_path}")
+    logger.info(f"Generated visualizations in {vis_dir}")
 
-def generate_random_roi_traces(
-    fluorescence_data, 
-    baseline_frames, 
-    analysis_frames, 
-    output_path, 
-    logger
+
+def create_individual_roi_plot(
+    df_f_trace,  # Renamed from trace to df_f_trace
+    roi_id,
+    is_active,
+    output_path,
+    title=None,
+    highlight_range=None,
+    logger=None
 ):
     """
-    Generate plots of traces for randomly selected ROIs.
+    Create a plot for an individual ROI.
     
     Parameters
     ----------
-    fluorescence_data : numpy.ndarray
-        Background-corrected fluorescence traces with shape (n_rois, n_frames)
-    baseline_frames : list
-        [start, end] frames for baseline
-    analysis_frames : list
-        [start, end] frames for analysis
+    df_f_trace : numpy.ndarray
+        dF/F trace for the ROI (baseline normalized to 0)
+    roi_id : int
+        ROI identifier
+    is_active : bool
+        Whether the ROI is active
     output_path : str
-        Path to save the visualization
-    logger : logging.Logger
+        Path to save the plot
+    title : str, optional
+        Plot title
+    highlight_range : list, optional
+        Range of frames to highlight [start, end]
+    logger : logging.Logger, optional
         Logger object
     """
-    n_rois, n_frames = fluorescence_data.shape
-    
-    # Select 3 random ROIs (or fewer if not enough)
-    n_random = min(3, n_rois)
-    random_indices = random.sample(range(n_rois), n_random)
-    
-    # Create figure
-    fig, axes = plt.subplots(n_random, 1, figsize=(10, 3*n_random), sharex=True)
-    
-    # Make sure axes is always a list
-    if n_random == 1:
-        axes = [axes]
-    
-    # Plot each selected ROI
-    for i, roi_idx in enumerate(random_indices):
-        trace = fluorescence_data[roi_idx]
+    try:
+        import matplotlib.pyplot as plt
         
-        # Calculate baseline
-        baseline = np.mean(trace[baseline_frames[0]:baseline_frames[1]+1])
+        plt.figure(figsize=(10, 6))
         
-        # Calculate dF/F
-        df_f = (trace - baseline) / baseline if baseline != 0 else trace
+        # Plot the trace
+        x = np.arange(len(df_f_trace))
+        plt.plot(x, df_f_trace, 'b-', linewidth=1.5)
         
-        # Plot trace
-        axes[i].plot(df_f, linewidth=1)
+        # Highlight specific range if provided
+        if highlight_range is not None:
+            start, end = highlight_range
+            start = max(0, start)
+            end = min(len(df_f_trace)-1, end)
+            
+            plt.axvspan(start, end, color='lightgray', alpha=0.3, label='Analysis Window')
         
-        # Add vertical lines for baseline and analysis windows
-        axes[i].axvspan(baseline_frames[0], baseline_frames[1], alpha=0.2, color='gray')
-        axes[i].axvspan(analysis_frames[0], analysis_frames[1], alpha=0.2, color='blue')
+        # Set title
+        if title is None:
+            title = f"ROI {roi_id}"
         
-        # Add labels
-        axes[i].set_ylabel('dF/F')
-        axes[i].set_title(f'ROI {roi_idx + 1}')
+        # Add active/inactive to title
+        if is_active:
+            plt.title(f"{title} (Active)", fontsize=14)
+        else:
+            plt.title(f"{title} (Inactive)", fontsize=14)
         
-        # Add grid
-        axes[i].grid(True, linestyle='--', alpha=0.7)
+        plt.xlabel("Frame", fontsize=12)
+        plt.ylabel("dF/F", fontsize=12)
+        plt.grid(True, alpha=0.3)
+        
+        # If there's a highlight, add a legend
+        if highlight_range is not None:
+            plt.legend()
+        
+        # Add some padding to the x-axis
+        plt.xlim(-len(df_f_trace)*0.02, len(df_f_trace)*1.02)
+        
+        # Add a zero line to reference baseline
+        plt.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150)
+        plt.close()
+        
+        if logger:
+            logger.info(f"Saved individual ROI plot to {output_path}")
     
-    # Add common x-label
-    axes[-1].set_xlabel('Frame')
-    
-    # Add legend
-    fig.legend(['Fluorescence', 'Baseline', 'Analysis'], loc='upper center', ncol=3)
-    
-    # Save figure
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-    
-    logger.info(f"Saved random ROI traces to {output_path}")
+    except Exception as e:
+        if logger:
+            logger.error(f"Error creating individual ROI plot: {str(e)}")
 
-def generate_roi_overlay(
-    roi_masks, 
-    original_image_path, 
-    output_path, 
-    flagged_rois, 
-    logger
+
+def create_trace_overlay(
+    df_f_traces,  # Renamed from fluorescence_data to df_f_traces
+    metrics_df,
+    output_path,
+    title="Fluorescence Traces Overlay",
+    highlight_frame_range=None,
+    logger=None
 ):
     """
-    Generate an overlay of ROI masks on the original image.
+    Create an overlay of all ROI traces.
+    
+    Parameters
+    ----------
+    df_f_traces : numpy.ndarray
+        dF/F traces with shape (n_rois, n_frames), baseline normalized to 0
+    metrics_df : pandas.DataFrame
+        DataFrame containing metrics for each ROI
+    output_path : str
+        Path to save the plot
+    title : str, optional
+        Plot title
+    highlight_frame_range : list, optional
+        Range of frames to highlight [start, end]
+    logger : logging.Logger, optional
+        Logger object
+    """
+    try:
+        import matplotlib.pyplot as plt
+        
+        plt.figure(figsize=(12, 8))
+        
+        # Get active ROIs
+        active_mask = metrics_df['is_active'].values
+        
+        # Create x values for the plot
+        x = np.arange(df_f_traces.shape[1])
+        
+        # Plot inactive ROIs first (in gray)
+        for i in range(df_f_traces.shape[0]):
+            if not active_mask[i]:
+                plt.plot(x, df_f_traces[i], color='gray', linewidth=0.5, alpha=0.3)
+        
+        # Plot active ROIs on top (in color)
+        for i in range(df_f_traces.shape[0]):
+            if active_mask[i]:
+                plt.plot(x, df_f_traces[i], linewidth=1, alpha=0.7)
+        
+        # Highlight specific range if provided
+        if highlight_frame_range is not None:
+            start, end = highlight_frame_range
+            start = max(0, start)
+            end = min(df_f_traces.shape[1]-1, end)
+            
+            plt.axvspan(start, end, color='lightgray', alpha=0.3, label='Analysis Window')
+            plt.legend()
+        
+        plt.title(title, fontsize=14)
+        plt.xlabel("Frame", fontsize=12)
+        plt.ylabel("dF/F", fontsize=12)
+        plt.grid(True, alpha=0.3)
+        
+        # Add a zero line to reference baseline
+        plt.axhline(y=0, color='k', linestyle='--', alpha=0.3)
+        
+        # Add some padding to the x-axis
+        plt.xlim(-df_f_traces.shape[1]*0.02, df_f_traces.shape[1]*1.02)
+        
+        # Create legend indicating number of active vs inactive ROIs
+        n_active = np.sum(active_mask)
+        n_inactive = df_f_traces.shape[0] - n_active
+        
+        plt.figtext(0.02, 0.02, f"Active ROIs: {n_active}\nInactive ROIs: {n_inactive}", 
+                   bbox=dict(facecolor='white', alpha=0.8, boxstyle='round'))
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150)
+        plt.close()
+        
+        if logger:
+            logger.info(f"Saved trace overlay plot to {output_path}")
+    
+    except Exception as e:
+        if logger:
+            logger.error(f"Error creating trace overlay plot: {str(e)}")
+
+
+def create_event_summary(
+    metrics_df,
+    output_path,
+    title="Event Summary",
+    x_metric="peak_amplitude",
+    y_metric="peak_area_under_curve",
+    color_metric="is_active",
+    logger=None
+):
+    """
+    Create a summary plot of event metrics.
+    
+    Parameters
+    ----------
+    metrics_df : pandas.DataFrame
+        DataFrame containing metrics for each ROI
+    output_path : str
+        Path to save the plot
+    title : str, optional
+        Plot title
+    x_metric : str, optional
+        Metric to plot on x-axis
+    y_metric : str, optional
+        Metric to plot on y-axis
+    color_metric : str, optional
+        Metric to use for coloring points
+    logger : logging.Logger, optional
+        Logger object
+    """
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        plt.figure(figsize=(10, 8))
+        
+        # Create scatter plot
+        if color_metric == "is_active":
+            # Use active/inactive as color categories
+            colors = metrics_df['is_active'].map({True: 'green', False: 'gray'})
+            
+            plt.scatter(
+                metrics_df[x_metric],
+                metrics_df[y_metric],
+                c=colors,
+                alpha=0.7,
+                s=50,
+                edgecolor='black',
+                linewidth=0.5
+            )
+            
+            # Add a legend
+            from matplotlib.lines import Line2D
+            legend_elements = [
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='green', markersize=10, label='Active'),
+                Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', markersize=10, label='Inactive')
+            ]
+            plt.legend(handles=legend_elements)
+        else:
+            # Use a continuous colormap for other metrics
+            scatter = plt.scatter(
+                metrics_df[x_metric],
+                metrics_df[y_metric],
+                c=metrics_df[color_metric],
+                cmap='viridis',
+                alpha=0.7,
+                s=50,
+                edgecolor='black',
+                linewidth=0.5
+            )
+            
+            # Add a colorbar
+            plt.colorbar(scatter, label=color_metric)
+        
+        plt.title(title, fontsize=14)
+        plt.xlabel(x_metric.replace('_', ' ').title(), fontsize=12)
+        plt.ylabel(y_metric.replace('_', ' ').title(), fontsize=12)
+        plt.grid(True, alpha=0.3)
+        
+        # Add a text box with summary statistics
+        n_active = metrics_df['is_active'].sum()
+        n_total = len(metrics_df)
+        percent_active = (n_active / n_total) * 100 if n_total > 0 else 0
+        
+        stats_text = (
+            f"Total ROIs: {n_total}\n"
+            f"Active ROIs: {n_active} ({percent_active:.1f}%)\n"
+            f"Mean {x_metric}: {metrics_df[x_metric].mean():.3f}\n"
+            f"Mean {y_metric}: {metrics_df[y_metric].mean():.3f}"
+        )
+        
+        plt.figtext(0.02, 0.02, stats_text, 
+                   bbox=dict(facecolor='white', alpha=0.8, boxstyle='round'))
+        
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=150)
+        plt.close()
+        
+        if logger:
+            logger.info(f"Saved event summary plot to {output_path}")
+    
+    except Exception as e:
+        if logger:
+            logger.error(f"Error creating event summary plot: {str(e)}")
+
+
+def create_roi_map(
+    roi_masks,
+    metrics_df,
+    tif_path,
+    output_path,
+    colormap='viridis',
+    logger=None
+):
+    """
+    Create a map of ROIs colored by activity.
     
     Parameters
     ----------
     roi_masks : list
         List of ROI masks
-    original_image_path : str
-        Path to the original .tif image
-    output_path : str
-        Path to save the visualization
-    flagged_rois : list
-        List of flagged ROI IDs with issues
-    logger : logging.Logger
-        Logger object
-    """
-    # Load the first frame of the original image
-    try:
-        with tifffile.TiffFile(original_image_path) as tif:
-            if len(tif.pages) > 0:
-                original_image = tif.pages[0].asarray()
-            else:
-                raise ValueError("No frames found in the original .tif file")
-    except Exception as e:
-        logger.error(f"Error loading original image: {str(e)}")
-        return
-    
-    # Normalize to 8-bit for visualization
-    original_image = cv2.normalize(
-        original_image, 
-        None, 
-        alpha=0, 
-        beta=255, 
-        norm_type=cv2.NORM_MINMAX, 
-        dtype=cv2.CV_8U
-    )
-    
-    # Convert to RGB
-    overlay_image = cv2.cvtColor(original_image, cv2.COLOR_GRAY2RGB)
-    
-    # Get list of flagged ROI IDs
-    flagged_ids = [flag['roi_id'] for flag in flagged_rois]
-    
-    # Overlay each ROI mask
-    for i, mask in enumerate(roi_masks):
-        roi_id = i + 1
-        
-        # Choose color based on whether ROI is flagged
-        if roi_id in flagged_ids:
-            color = (255, 0, 0)  # Red for flagged ROIs
-        else:
-            color = (0, 255, 0)  # Green for normal ROIs
-        
-        # Create a contour of the mask
-        y_indices, x_indices = np.where(mask)
-        points = np.column_stack((x_indices, y_indices))
-        
-        if len(points) > 0:
-            # Find contour of ROI
-            try:
-                hull = cv2.convexHull(points)
-                cv2.drawContours(overlay_image, [hull], 0, color, 2)
-                
-                # Find centroid
-                center_y = int(np.mean(y_indices))
-                center_x = int(np.mean(x_indices))
-                
-                # Add ROI ID
-                cv2.putText(
-                    overlay_image,
-                    str(roi_id),
-                    (center_x, center_y),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    color,
-                    1,
-                    cv2.LINE_AA
-                )
-            except Exception as e:
-                logger.warning(f"Error drawing contour for ROI {roi_id}: {str(e)}")
-    
-    # Save overlay image
-    cv2.imwrite(output_path, overlay_image)
-    
-    logger.info(f"Saved ROI overlay to {output_path}")
-
-def generate_response_comparison(
-    fluorescence_data, 
-    metrics_df, 
-    baseline_frames, 
-    analysis_frames, 
-    output_path, 
-    logger
-):
-    """
-    Generate time-series overlays comparing spontaneous vs. evoked responses.
-    
-    Parameters
-    ----------
-    fluorescence_data : numpy.ndarray
-        Background-corrected fluorescence traces with shape (n_rois, n_frames)
     metrics_df : pandas.DataFrame
         DataFrame containing metrics for each ROI
-    baseline_frames : list
-        [start, end] frames for baseline
-    analysis_frames : list
-        [start, end] frames for analysis
+    tif_path : str
+        Path to the original .tif image
     output_path : str
-        Path to save the visualization
-    logger : logging.Logger
+        Path to save the plot
+    colormap : str, optional
+        Colormap to use
+    logger : logging.Logger, optional
         Logger object
     """
-    n_rois, n_frames = fluorescence_data.shape
-    
-    # Select active ROIs (those with significant evoked response)
-    active_indices = metrics_df[metrics_df['is_active']]['roi_id'].values - 1  # Adjust for 0-indexing
-    
-    # If fewer than 2 active ROIs, select 2 random ROIs
-    if len(active_indices) < 2:
-        active_indices = np.random.choice(n_rois, min(2, n_rois), replace=False)
-    
-    # Select up to 4 active ROIs for display
-    display_indices = active_indices[:min(4, len(active_indices))]
-    
-    # Create figure
-    fig, axes = plt.subplots(len(display_indices), 1, figsize=(10, 3*len(display_indices)), sharex=True)
-    
-    # Make sure axes is always a list
-    if len(display_indices) == 1:
-        axes = [axes]
-    
-    # Plot each selected ROI
-    for i, roi_idx in enumerate(display_indices):
-        trace = fluorescence_data[int(roi_idx)]
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
+        import tifffile
         
-        # Calculate baseline
-        baseline = np.mean(trace[baseline_frames[0]:baseline_frames[1]+1])
+        # Load the first frame of the TIF file
+        with tifffile.TiffFile(tif_path) as tif:
+            if len(tif.pages) > 0:
+                background = tif.pages[0].asarray()
+            else:
+                # Create blank background
+                if len(roi_masks) > 0:
+                    background = np.zeros_like(roi_masks[0], dtype=np.uint16)
+                else:
+                    background = np.zeros((512, 512), dtype=np.uint16)
         
-        # Calculate dF/F
-        df_f = (trace - baseline) / baseline if baseline != 0 else trace
+        plt.figure(figsize=(10, 10))
         
-        # Separate spontaneous and evoked periods
-        spont_period = df_f[baseline_frames[0]:baseline_frames[1]+1]
-        evoked_period = df_f[analysis_frames[0]:analysis_frames[1]+1]
+        # Display background in grayscale
+        plt.imshow(background, cmap='gray')
         
-        # Plot full trace in gray
-        axes[i].plot(np.arange(n_frames), df_f, color='gray', alpha=0.5, linewidth=1)
+        # Create colored ROI overlay
+        roi_overlay = np.zeros((*background.shape, 4))  # RGBA
         
-        # Plot spontaneous period in blue
-        axes[i].plot(
-            np.arange(baseline_frames[0], baseline_frames[1]+1),
-            spont_period,
-            color='blue',
-            linewidth=1.5
-        )
+        # Get active status for each ROI
+        active_status = metrics_df['is_active'].values
         
-        # Plot evoked period in red
-        axes[i].plot(
-            np.arange(analysis_frames[0], analysis_frames[1]+1),
-            evoked_period,
-            color='red',
-            linewidth=1.5
-        )
+        for i, mask in enumerate(roi_masks):
+            roi_id = i + 1
+            
+            # Find ROI in metrics_df
+            is_active = active_status[i] if i < len(active_status) else False
+            
+            # Color based on active status
+            if is_active:
+                color = np.array([0, 1, 0, 0.5])  # Green, semi-transparent
+            else:
+                color = np.array([1, 0, 0, 0.3])  # Red, more transparent
+            
+            # Apply color to mask
+            for c in range(4):
+                roi_overlay[:, :, c] = np.where(mask, color[c], roi_overlay[:, :, c])
+            
+            # Add ROI label
+            y, x = np.where(mask)
+            if len(y) > 0 and len(x) > 0:
+                center_y = int(np.mean(y))
+                center_x = int(np.mean(x))
+                plt.text(center_x, center_y, str(roi_id), color='white', fontsize=8,
+                        ha='center', va='center', bbox=dict(facecolor='black', alpha=0.5, pad=0))
         
-        # Add shaded regions for baseline and analysis windows
-        axes[i].axvspan(baseline_frames[0], baseline_frames[1], alpha=0.1, color='blue')
-        axes[i].axvspan(analysis_frames[0], analysis_frames[1], alpha=0.1, color='red')
+        # Overlay colored ROIs
+        plt.imshow(roi_overlay)
         
-        # Add labels
-        axes[i].set_ylabel('dF/F')
-        axes[i].set_title(f'ROI {int(roi_idx) + 1}')
+        # Create legend
+        active_patch = mpatches.Patch(color='green', alpha=0.5, label='Active ROI')
+        inactive_patch = mpatches.Patch(color='red', alpha=0.3, label='Inactive ROI')
+        plt.legend(handles=[active_patch, inactive_patch], loc='upper right')
         
-        # Add grid
-        axes[i].grid(True, linestyle='--', alpha=0.7)
+        # Add title with ROI counts
+        n_active = np.sum(active_status)
+        plt.title(f"ROI Map ({n_active}/{len(roi_masks)} Active)", fontsize=14)
+        
+        plt.axis('off')
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=200)
+        plt.close()
+        
+        if logger:
+            logger.info(f"Saved ROI map to {output_path}")
     
-    # Add common x-label
-    axes[-1].set_xlabel('Frame')
-    
-    # Add legend
-    fig.legend(
-        ['Full Trace', 'Spontaneous Activity', 'Evoked Response', 'Baseline Period', 'Analysis Period'],
-        loc='upper center',
-        ncol=3
-    )
-    
-    # Save figure
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-    
-    logger.info(f"Saved response comparison to {output_path}")
+    except Exception as e:
+        if logger:
+            logger.error(f"Error creating ROI map: {str(e)}")
 
-def generate_qc_report(
-    flagged_rois, 
-    fluorescence_data, 
-    output_path, 
-    logger
+
+def create_quality_metrics_plot(
+    metrics_df,
+    flagged_rois,
+    output_path,
+    logger=None
 ):
     """
-    Generate a QC report showing traces of flagged ROIs.
+    Create a plot of quality metrics for ROIs.
     
     Parameters
     ----------
+    metrics_df : pandas.DataFrame
+        DataFrame containing metrics for each ROI
     flagged_rois : list
-        List of flagged ROI IDs with issues
-    fluorescence_data : numpy.ndarray
-        Background-corrected fluorescence traces with shape (n_rois, n_frames)
+        List of ROI IDs with quality issues
     output_path : str
-        Path to save the visualization
-    logger : logging.Logger
+        Path to save the plot
+    logger : logging.Logger, optional
         Logger object
     """
-    if not flagged_rois:
-        logger.info("No flagged ROIs to report")
+    try:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
         
-        # Create a simple figure stating no issues
-        plt.figure(figsize=(8, 6))
-        plt.text(0.5, 0.5, "No QC issues detected", fontsize=16, ha='center')
-        plt.axis('off')
-        plt.savefig(output_path, dpi=300)
+        # Convert flagged_rois to a set of ROI IDs for easier lookup
+        flagged_roi_ids = {flag['roi_id'] for flag in flagged_rois}
+        
+        # Add a column to metrics_df indicating if ROI is flagged
+        metrics_df['is_flagged'] = metrics_df['roi_id'].isin(flagged_roi_ids)
+        
+        plt.figure(figsize=(12, 10))
+        
+        # Create a 2x2 grid of quality metric plots
+        plt.subplot(2, 2, 1)
+        sns.scatterplot(
+            data=metrics_df,
+            x='baseline_fluorescence',
+            y='std_df_f',
+            hue='is_flagged',
+            palette={True: 'red', False: 'blue'},
+            s=50
+        )
+        plt.title("Signal Variability vs Baseline")
+        plt.xlabel("Baseline Fluorescence")
+        plt.ylabel("Signal Std. Dev.")
+        
+        plt.subplot(2, 2, 2)
+        sns.scatterplot(
+            data=metrics_df,
+            x='roi_id',
+            y='mean_df_f',
+            hue='is_flagged',
+            palette={True: 'red', False: 'blue'},
+            s=50
+        )
+        plt.title("Mean dF/F by ROI")
+        plt.xlabel("ROI ID")
+        plt.ylabel("Mean dF/F")
+        
+        plt.subplot(2, 2, 3)
+        sns.histplot(
+            data=metrics_df,
+            x='baseline_fluorescence',
+            hue='is_flagged',
+            palette={True: 'red', False: 'blue'},
+            element="step",
+            common_norm=False,
+            alpha=0.5
+        )
+        plt.title("Baseline Fluorescence Distribution")
+        plt.xlabel("Baseline Fluorescence")
+        plt.ylabel("Count")
+        
+        plt.subplot(2, 2, 4)
+        sns.scatterplot(
+            data=metrics_df,
+            x='distance_to_lamina',
+            y='peak_amplitude',
+            hue='is_flagged',
+            palette={True: 'red', False: 'blue'},
+            s=50
+        )
+        plt.title("Peak Amplitude vs Distance")
+        plt.xlabel("Distance to Lamina")
+        plt.ylabel("Peak Amplitude")
+        
+        # Add a summary text
+        plt.figtext(0.5, 0.01, 
+                  f"Total ROIs: {len(metrics_df)}, Flagged ROIs: {len(flagged_roi_ids)} ({len(flagged_roi_ids)/len(metrics_df)*100:.1f}%)",
+                  ha="center", fontsize=12, bbox=dict(facecolor='white', alpha=0.8, boxstyle='round'))
+        
+        plt.tight_layout(rect=[0, 0.03, 1, 0.97])
+        plt.savefig(output_path, dpi=150)
         plt.close()
-        return
-    
-    # Group flagged ROIs by issue type
-    issue_types = sorted(set(flag['issue'] for flag in flagged_rois))
-    
-    # Create figure with subplots for each issue type
-    fig, axes = plt.subplots(
-        len(issue_types), 
-        1, 
-        figsize=(10, 4 * len(issue_types)), 
-        sharex=True
-    )
-    
-    # Make sure axes is always a list
-    if len(issue_types) == 1:
-        axes = [axes]
-    
-    # Plot each issue type
-    for i, issue in enumerate(issue_types):
-        # Get ROIs with this issue
-        issue_rois = [flag for flag in flagged_rois if flag['issue'] == issue]
         
-        # Plot traces for these ROIs
-        for flag in issue_rois:
-            roi_idx = flag['roi_id'] - 1  # Adjust for 0-indexing
-            
-            if roi_idx < fluorescence_data.shape[0]:
-                trace = fluorescence_data[roi_idx]
-                
-                # Calculate baseline
-                baseline = np.mean(trace[:20])  # Use first 20 frames as baseline
-                
-                # Calculate dF/F
-                df_f = (trace - baseline) / baseline if baseline != 0 else trace
-                
-                # Plot trace
-                axes[i].plot(df_f, alpha=0.7, linewidth=1, label=f"ROI {flag['roi_id']}")
-                
-                # Mark issue location if available
-                if 'frame' in flag:
-                    axes[i].axvline(x=flag['frame'], color='red', linestyle='--', alpha=0.5)
-        
-        # Add labels
-        axes[i].set_title(f"Issue: {issue.replace('_', ' ').title()}")
-        axes[i].set_ylabel('dF/F')
-        axes[i].grid(True, linestyle='--', alpha=0.7)
-        
-        # Add legend
-        if len(issue_rois) <= 10:  # Only show legend if not too many ROIs
-            axes[i].legend(loc='upper right')
+        if logger:
+            logger.info(f"Saved quality metrics plot to {output_path}")
     
-    # Add common x-label
-    axes[-1].set_xlabel('Frame')
-    
-    # Save figure
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=300)
-    plt.close()
-    
-    logger.info(f"Saved QC report to {output_path}")
+    except Exception as e:
+        if logger:
+            logger.error(f"Error creating quality metrics plot: {str(e)}")

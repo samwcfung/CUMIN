@@ -89,8 +89,8 @@ roi_processing:
     min_background_area: 200       # Minimum pixel size for background region
     background_dilation: 2         # Dilation of ROI masks to avoid using pixels close to ROIs
     periphery_size: 2              # Size of ROI periphery for local background
-    percentile: 0.5                # For darkest_pixels method
-    median_filter_size: 3          # For pixel noise reduction
+    percentile: 0.2                # For darkest_pixels method
+    median_filter_size: 5          # For pixel noise reduction; increased from 3
     dilation_size: 2               # For expanding background mask
     cutoff_freq: 0.001             # For lowpass_filter method
     filter_order: 2                # For lowpass_filter method
@@ -98,23 +98,43 @@ roi_processing:
 analysis:
   frame_rate: 1.67                         # Acquisition frame rate in Hz
   
-  # UPDATED: Use a broader analysis window to catch more activity
-  baseline_frames: [0, 100]                # Range of frames to use for baseline calculation
-  analysis_frames: [100, 600]              # MODIFIED: Broader range to capture more potential activity
+  # Baseline parameters for different conditions
+  condition_specific:
+    # For 0um (spontaneous activity only)
+    "0um":
+      baseline_frames: [0, 100]              # Range for baseline calculation
+      analysis_frames: [0, 580]              # Analyze the full recording (0-580)
+      active_threshold: 0.02                 # Threshold for determining if a spontaneous ROI is active
+      active_metric: "spont_peak_frequency"  # Use spontaneous frequency to determine activity
+      
+    # For 10um (evoked activity)
+    "10um":
+      baseline_frames: [0, 100]              # Range for baseline calculation
+      analysis_frames: [100, 580]            # Analyze only post-stimulus frames 
+      active_threshold: 0.02                 # Threshold for determining if an evoked ROI is active
+      active_metric: "peak_amplitude"        # Use peak amplitude to determine activity
+      
+    # For 25um (evoked activity)
+    "25um":
+      baseline_frames: [0, 100]              # Range for baseline calculation
+      analysis_frames: [100, 580]            # Analyze only post-stimulus frames
+      active_threshold: 0.02                 # Threshold for determining if an evoked ROI is active
+      active_metric: "peak_amplitude"        # Use peak amplitude to determine activity
+  
+  # Default parameters (used if condition is not recognized)
+  baseline_frames: [0, 100]                # Default range for baseline calculation
+  analysis_frames: [100, 580]              # Default range for analysis
+  active_threshold: 0.02                   # Default threshold for activity
   
   # Baseline calculation parameters
   baseline_method: "percentile"            # Options: "percentile", "mean", "min"
-  baseline_percentile: 8                   # Percentile to use when baseline_method is "percentile"
+  baseline_percentile: 3                   # Percentile to use when baseline_method is "percentile"
   baseline_n_frames: 10                    # Number of frames to use when baseline_method is "mean"
   
-  # UPDATED: Activity threshold parameter - SIGNIFICANTLY lowered
-  active_threshold: 0.02                   # Reduced threshold for determining if an ROI is active
-  
-  # UPDATED: Peak detection parameters with increased sensitivity
+  # Peak detection parameters maintained from original
   peak_detection:
-    prominence: 0.03                       # Reduced prominence for more sensitive detection, reduced from 0.03
-    width: 2                               # Reduced minimum width to catch narrower peaks
-    # ADDED: Additional scipy.signal.find_peaks parameters
+    prominence: 0.03                       # Prominence for peak detection
+    width: 2                               # Minimum width to catch narrower peaks
     distance: 10                           # Minimum samples between peaks
     height: 0.02                           # Minimum height above baseline to be considered a peak
     rel_height: 0.5                        # Relative height from peak to calculate width

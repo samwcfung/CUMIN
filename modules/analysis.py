@@ -23,7 +23,8 @@ def analyze_fluorescence(
     original_image_path,
     config, 
     logger,
-    output_dir=None  # Add output directory parameter
+    output_dir=None,
+    metadata=None  # Add metadata parameter
 ):
     """
     Extract metrics from fluorescence traces.
@@ -42,6 +43,8 @@ def analyze_fluorescence(
         Logger object
     output_dir : str, optional
         Directory to save intermediate traces
+    metadata : dict, optional
+        Metadata dictionary with condition information
         
     Returns
     -------
@@ -49,7 +52,32 @@ def analyze_fluorescence(
         DataFrame containing extracted metrics for each ROI
     """
     start_time = time.time()
-    logger.info("Starting fluorescence analysis")
+    
+    # Get condition from metadata if available
+    condition = metadata.get("condition", "unknown") if metadata else "unknown"
+    logger.info(f"Processing data for condition: {condition}")
+    
+    # Select condition-specific parameters if available
+    if condition in config.get("condition_specific", {}):
+        logger.info(f"Using condition-specific parameters for {condition}")
+        condition_config = config["condition_specific"][condition]
+        
+        # Extract parameters from condition-specific config
+        baseline_frames = condition_config.get("baseline_frames", config.get("baseline_frames", [0, 100]))
+        analysis_frames = condition_config.get("analysis_frames", config.get("analysis_frames", [100, 580]))
+        active_threshold = condition_config.get("active_threshold", config.get("active_threshold", 0.02))
+        active_metric = condition_config.get("active_metric", "peak_amplitude")
+        
+        logger.info(f"Condition {condition}: Analysis frames {analysis_frames}, active metric: {active_metric}")
+    else:
+        # Use default parameters if condition-specific not found
+        logger.info(f"No specific parameters for condition {condition}, using defaults")
+        baseline_frames = config.get("baseline_frames", [0, 100])
+        analysis_frames = config.get("analysis_frames", [100, 580])  
+        active_threshold = config.get("active_threshold", 0.02)
+        active_metric = "peak_amplitude"  # Default metric
+    
+    logger.info(f"Starting fluorescence analysis for condition: {condition}")
     
     n_rois, n_frames = fluorescence_data.shape
 
@@ -72,21 +100,17 @@ def analyze_fluorescence(
         pd.DataFrame(fluorescence_data).to_csv(raw_traces_path)
         logger.info(f"Saved raw traces to {raw_traces_path}")
     
-    # Extract baseline and analysis frame ranges
-    baseline_frames = config.get("baseline_frames", [0, 100])  # Use first 100 frames
-    analysis_frames = config.get("analysis_frames", [233, 580])
+    # Verify frame ranges are valid
+    baseline_frames = [max(0, baseline_frames[0]), min(n_frames-1, baseline_frames[1])]
+    analysis_frames = [max(0, analysis_frames[0]), min(n_frames-1, analysis_frames[1])]
+    
+    logger.info(f"Using frames {baseline_frames[0]}-{baseline_frames[1]} for baseline calculation")
     
     # Get baseline calculation method and parameters
     baseline_method = config.get("baseline_method", "percentile")  # Default to percentile method
     baseline_percentile = config.get("baseline_percentile", 8)  # Default to 8th percentile
     baseline_n_frames = config.get("baseline_n_frames", 10)  # Default to first 10 frames (for mean method)
     
-    # Verify frame ranges are valid
-    baseline_frames = [max(0, baseline_frames[0]), min(n_frames-1, baseline_frames[1])]
-    analysis_frames = [max(0, analysis_frames[0]), min(n_frames-1, analysis_frames[1])]
-    
-    logger.info(f"Using frames {baseline_frames[0]}-{baseline_frames[1]} for baseline calculation")
-    logger.info(f"Using baseline method: {baseline_method}")
     if baseline_method == "percentile":
         logger.info(f"Using {baseline_percentile}th percentile for baseline calculation")
     elif baseline_method == "mean":
@@ -104,6 +128,9 @@ def analyze_fluorescence(
         photobleach_corrected = np.zeros_like(fluorescence_data)
         df_f_traces = np.zeros_like(fluorescence_data)
     
+    # Create array to store dF/F traces for all ROIs
+    df_f_all_traces = np.zeros_like(fluorescence_data)
+    
     # Process each ROI
     for i in range(n_rois):
         # Get trace for this ROI
@@ -117,8 +144,10 @@ def analyze_fluorescence(
             photobleach_corrected[i] = corrected_trace
         
         # Calculate baseline based on selected method
+        # Explicitly verify we're using 8th percentile when method is 'percentile'
         if baseline_method == "percentile":
-            # Use percentile method
+            # Use percentile method - explicitly ensure 8th percentile
+            logger.info(f"Using {baseline_percentile}th percentile for baseline calculation")
             baseline = calculate_baseline_excluding_peaks(
                 corrected_trace, 
                 baseline_frames, 
@@ -150,6 +179,9 @@ def analyze_fluorescence(
         # Calculate dF/F
         df_f = (corrected_trace - baseline) / baseline if baseline != 0 else corrected_trace
         
+        # Store dF/F trace for this ROI
+        df_f_all_traces[i] = df_f
+        
         # Save dF/F trace if enabled
         if save_intermediate:
             df_f_traces[i] = df_f
@@ -164,14 +196,14 @@ def analyze_fluorescence(
         min_df_f = np.min(analysis_window)
         std_df_f = np.std(analysis_window)
         
-        # Find evoked peak parameters
+        # Find evoked peak parameters - always calculate them
         peak_params = extract_peak_parameters(
             analysis_window, 
             config.get("peak_detection", {}),
             logger
         )
         
-        # Find spontaneous activity
+        # Find spontaneous activity - always calculate them
         spont_params = extract_spontaneous_activity(
             df_f[baseline_frames[0]:baseline_frames[1]+1],
             config.get("spontaneous_activity", {}),
@@ -184,12 +216,19 @@ def analyze_fluorescence(
         if 'peak_amplitude' not in peak_params:
             peak_params['peak_amplitude'] = peak_params['amplitude']
             
-        # Determine whether the ROI is active - use try/except to be safe
-        try:
-            is_active = peak_params['amplitude'] > config.get("active_threshold", 0.1)
-        except Exception as e:
-            logger.warning(f"Error determining ROI activity: {str(e)}. Setting to inactive.")
-            is_active = False
+        # Determine whether the ROI is active based on condition-specific metric
+        # For 0um condition: use spontaneous frequency
+        # For 10um and 25um conditions: use peak amplitude
+        if active_metric == "spont_peak_frequency":
+            is_active = spont_params['peak_frequency'] > active_threshold
+            logger.info(f"ROI {i+1} activity determined by spontaneous peak frequency: {spont_params['peak_frequency']:.4f} (threshold: {active_threshold})")
+        elif active_metric == "peak_amplitude":
+            is_active = peak_params['amplitude'] > active_threshold
+            logger.info(f"ROI {i+1} activity determined by peak amplitude: {peak_params['amplitude']:.4f} (threshold: {active_threshold})")
+        else:
+            # Default to peak amplitude if unknown metric
+            is_active = peak_params['amplitude'] > active_threshold
+            logger.warning(f"Unknown active_metric '{active_metric}', using peak amplitude")
         
         # Compile metrics for this ROI
         roi_metrics = {
@@ -200,7 +239,8 @@ def analyze_fluorescence(
             'max_df_f': max_df_f,
             'min_df_f': min_df_f,
             'std_df_f': std_df_f,
-            'is_active': is_active
+            'is_active': is_active,
+            'condition': condition  # Include condition in metrics
         }
         
         # Add peak parameters
@@ -223,13 +263,38 @@ def analyze_fluorescence(
         pd.DataFrame(df_f_traces).to_csv(df_f_traces_path)
         logger.info(f"Saved dF/F traces to {df_f_traces_path}")
     
+    # ALWAYS save the dF/F traces to a dedicated file in the main output directory (not just in intermediate traces)
+    df_f_output_path = os.path.join(output_dir, f"{Path(original_image_path).stem}_df_f_traces.csv")
+    pd.DataFrame(df_f_all_traces).to_csv(df_f_output_path)
+    logger.info(f"Saved dF/F traces (baseline normalized to 0) to {df_f_output_path}")
+    
+    # Also save as HDF5 for more efficient storage and faster loading
+    df_f_h5_path = os.path.join(output_dir, f"{Path(original_image_path).stem}_df_f_traces.h5")
+    try:
+        import h5py
+        with h5py.File(df_f_h5_path, 'w') as f:
+            f.create_dataset('df_f_traces', data=df_f_all_traces, compression='gzip')
+            # Store metadata
+            meta_group = f.create_group('metadata')
+            meta_group.attrs['condition'] = condition if condition else "unknown"
+            meta_group.attrs['baseline_method'] = baseline_method
+            meta_group.attrs['baseline_percentile'] = baseline_percentile
+            meta_group.attrs['baseline_frames'] = baseline_frames
+            meta_group.attrs['analysis_frames'] = analysis_frames
+            meta_group.attrs['n_rois'] = n_rois
+            meta_group.attrs['n_frames'] = n_frames
+            meta_group.attrs['source_file'] = Path(original_image_path).name
+        logger.info(f"Saved dF/F traces to HDF5 file {df_f_h5_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save HDF5 file: {str(e)}")
+    
     # Convert to DataFrame
     metrics_df = pd.DataFrame(metrics)
     
     logger.info(f"Fluorescence analysis completed in {time.time() - start_time:.2f} seconds")
     logger.info(f"Extracted metrics for {n_rois} ROIs")
     
-    return metrics_df
+    return metrics_df, df_f_all_traces  # Return both metrics and dF/F traces
 
 def correct_photobleaching(trace, baseline_frames, logger):
     """
