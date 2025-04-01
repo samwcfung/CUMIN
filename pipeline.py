@@ -45,6 +45,13 @@ from modules.analysis import analyze_fluorescence, perform_qc_checks
 from modules.visualization import generate_visualizations
 from modules.utils import setup_logging, save_slice_data, save_mouse_summary
 
+try:
+    from modules.motion_correction import apply_normcorre_correction, estimate_motion
+    HAS_MOTION_CORRECTION = True
+except ImportError:
+    HAS_MOTION_CORRECTION = False
+    warnings.warn("Motion correction module not found. This feature will be disabled.")
+    
 # Import advanced analysis module if available
 try:
     from modules.advanced_analysis import run_advanced_analysis
@@ -80,13 +87,155 @@ def load_config(config_path, args=None):
                 config["advanced_analysis"]["enabled"] = False
                 logging.info("Advanced analysis disabled via command line argument")
         
+        # Add edge detection configuration if not present
+        if "analysis" not in config:
+            config["analysis"] = {}
+            
+        if "peak_detection" not in config["analysis"]:
+            config["analysis"]["peak_detection"] = {}
+            
+        # Check for edge detection parameters and add defaults if missing
+        peak_detection = config["analysis"]["peak_detection"]
+        if "edge_detection" not in peak_detection:
+            peak_detection["edge_detection"] = True
+            peak_detection["edge_threshold"] = 0.03
+            peak_detection["edge_window"] = 10
+            peak_detection["edge_rise_threshold"] = 0.005
+            logging.info("Added edge peak detection configuration")
+            
+        # Ensure we have a configuration for condition-specific metrics
+        if "condition_specific" in config["analysis"] and "0um" in config["analysis"]["condition_specific"]:
+            # Update the 0um condition to use max_df_f as active_metric if not already set
+            if "active_metric" not in config["analysis"]["condition_specific"]["0um"]:
+                config["analysis"]["condition_specific"]["0um"]["active_metric"] = "max_df_f"
+                logging.info("Updated '0um' condition to use max_df_f as active_metric")
+        
         return config
     except Exception as e:
         logging.error(f"Failed to load configuration: {str(e)}")
         sys.exit(1)
 
+def correct_motion(tif_path, output_dir, config, logger):
+    """
+    Apply motion correction to a TIFF file.
+    
+    Parameters
+    ----------
+    tif_path : str
+        Path to the TIFF file
+    output_dir : str
+        Output directory
+    config : dict
+        Configuration dictionary
+    logger : logging.Logger
+        Logger object
+    
+    Returns
+    -------
+    tuple
+        (corrected_data, shape) - Motion corrected data and image shape
+    """
+    start_time = time.time()
+    slice_name = Path(tif_path).stem
+    
+    if not HAS_MOTION_CORRECTION:
+        logger.warning("Motion correction is not available. NoRMCorre is not installed.")
+        return None, None
+    
+    # Check if motion correction is enabled
+    motion_config = config.get("motion_correction", {})
+    if not motion_config.get("enabled", False):
+        logger.info("Motion correction is disabled in config. Skipping.")
+        return None, None
+    
+    logger.info(f"Starting motion correction for {slice_name}")
+    
+    # Create output path
+    output_h5 = os.path.join(output_dir, f"{slice_name}_motioncorrected.h5")
+    
+    # Extract motion correction parameters
+    params = {
+        "method": motion_config.get("method", "rigid"),
+        "max_shift": motion_config.get("max_shift", 10),
+        "patch_size": [motion_config.get("patch_size", 50), motion_config.get("patch_size", 50)]
+    }
+    
+    logger.info(f"Motion correction parameters: {params}")
+    
+    try:
+        # Load data
+        with tifffile.TiffFile(tif_path) as tif:
+            data = tif.asarray()
+            
+            # Check dimensions - some TIFFs may be in TZYX format
+            if len(data.shape) > 3:
+                logger.info(f"Detected {len(data.shape)}D data, reshaping")
+                if len(data.shape) == 4:  # TZYX
+                    data = data[:, 0] if data.shape[1] < data.shape[0] else data[0]
+                elif len(data.shape) == 5:  # TZCYX
+                    data = data[:, 0, 0] if data.shape[1] < data.shape[0] else data[0, 0]
+            
+            # Ensure data is in (frames, height, width) format
+            if len(data.shape) == 3:
+                if data.shape[0] < data.shape[1] and data.shape[0] < data.shape[2]:
+                    # Already in (frames, height, width) format
+                    pass
+                else:
+                    # Try to rearrange to (frames, height, width)
+                    if data.shape[2] < data.shape[0] and data.shape[2] < data.shape[1]:
+                        data = np.moveaxis(data, 2, 0)
+                    elif data.shape[1] < data.shape[0] and data.shape[1] < data.shape[2]:
+                        data = np.moveaxis(data, 1, 0)
+            
+            logger.info(f"Loaded data with shape {data.shape}")
+            
+            # Get dimensions
+            n_frames, height, width = data.shape
+            image_shape = (height, width)
+            
+            # Convert to float32 if needed
+            if data.dtype != np.float32:
+                data = data.astype(np.float32)
+            
+            # Apply motion correction
+            corrected_data, shifts = apply_normcorre_correction(data, params, logger)
+            
+            # Save results
+            with h5py.File(output_h5, 'w') as f:
+                # Save corrected data
+                f.create_dataset('corrected_data', data=corrected_data, compression='gzip')
+                
+                # Save shifts
+                f.create_dataset('shifts', data=shifts)
+                
+                # Save metadata
+                meta_group = f.create_group('metadata')
+                meta_group.attrs['method'] = params["method"]
+                meta_group.attrs['max_shift'] = params["max_shift"]
+                meta_group.attrs['processing_time'] = time.time() - start_time
+                meta_group.create_dataset('image_shape', data=np.array(image_shape))
+            
+            logger.info(f"Motion correction completed in {time.time() - start_time:.2f} seconds")
+            
+            # Generate motion plot
+            try:
+                from modules.motion_correction import plot_motion_shifts
+                plot_path = os.path.join(output_dir, f"{slice_name}_motion.png")
+                plot_motion_shifts(shifts, params["method"], plot_path, logger)
+                logger.info(f"Motion plot saved to {plot_path}")
+            except Exception as e:
+                logger.warning(f"Could not generate motion plot: {str(e)}")
+            
+            return corrected_data, image_shape
+    
+    except Exception as e:
+        logger.error(f"Error in motion correction: {str(e)}")
+        return None, None
+        
 def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
     """Process a matched .tif and .zip ROI file pair."""
+    import tifffile
+    
     start_time = time.time()
     slice_name = Path(tif_path).stem
     
@@ -113,10 +262,35 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
         else:
             slice_logger.info(f"Unknown condition '{condition}': Will use default analysis parameters")
             
+        # Motion correction - ADD THIS SECTION
+        motion_corrected_data = None
+        motion_corrected_shape = None
+
+         # Check if motion correction is enabled and should be applied
+        motion_config = config.get("motion_correction", {})
+        apply_motion_corr = motion_config.get("enabled", False)
+        apply_before_photobleach = motion_config.get("apply_before_photobleach", True)
+        
+        if apply_motion_corr and apply_before_photobleach and mode in ["all", "preprocess"]:
+            slice_logger.info("Applying motion correction before photobleaching correction")
+            motion_corrected_data, motion_corrected_shape = correct_motion(
+                tif_path, 
+                slice_output_dir, 
+                config, 
+                slice_logger
+            )
+        
         # Preprocessing
         corrected_data = None
         image_shape = None
         cnmf_components = None
+        
+        # Choose the data source based on whether motion correction was applied
+        data_source = tif_path
+        if motion_corrected_data is not None:
+            slice_logger.info("Using motion-corrected data for preprocessing")
+            data_source = motion_corrected_data
+            image_shape = motion_corrected_shape
         
         if mode in ["all", "preprocess"]:
             slice_logger.info("Starting preprocessing")
@@ -149,7 +323,7 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
             
             # Run photobleaching correction (ONLY ONCE)
             corrected_data, image_shape = correct_photobleaching(
-                tif_path, 
+                data_source,  # Use motion-corrected data if available
                 output_h5,
                 config["preprocessing"],
                 slice_logger,
@@ -176,6 +350,33 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
                             del f['corrected_data']
                         f.create_dataset('corrected_data', data=corrected_data, compression='gzip')
                         f['metadata'].attrs['background_removed'] = True
+            
+            # If motion correction wasn't applied before, apply it after photobleaching
+        if apply_motion_corr and not apply_before_photobleach and motion_corrected_data is None:
+            if corrected_data is not None:
+                slice_logger.info("Applying motion correction after photobleaching correction")
+                # Write corrected data to temp file
+                temp_tif = os.path.join(slice_output_dir, f"{slice_name}_temp.tif")
+                tifffile.imwrite(temp_tif, corrected_data)
+                
+                # Apply motion correction
+                motion_corrected_data, _ = correct_motion(
+                    temp_tif,
+                    slice_output_dir,
+                    config,
+                    slice_logger
+                )
+                
+                # Update corrected_data if motion correction succeeded
+                if motion_corrected_data is not None:
+                    corrected_data = motion_corrected_data
+                    slice_logger.info("Using motion-corrected data for further processing")
+                    
+                # Clean up temp file
+                try:
+                    os.remove(temp_tif)
+                except:
+                    pass
             
             # Optional denoising (if enabled in config)
             if config["preprocessing"].get("denoise", {}).get("enabled", False):
@@ -208,11 +409,17 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
             preprocessing_time = time.time() - start_time
             slice_logger.info(f"Preprocessing completed in {preprocessing_time:.2f} seconds")
         else:
-            # Load corrected data if not preprocessing
             output_h5 = os.path.join(slice_output_dir, f"{slice_name}_corrected.h5")
-            with h5py.File(output_h5, 'r') as f:
-                corrected_data = f['corrected_data'][:]
-                image_shape = tuple(f['metadata/image_shape'][:])
+            try:
+                with h5py.File(output_h5, 'r') as f:
+                    corrected_data = f['corrected_data'][:]
+                    image_shape = tuple(f['metadata/image_shape'][:])
+            except FileNotFoundError:
+                # If H5 file doesn't exist, read directly from original TIFF
+                slice_logger.warning(f"Corrected H5 file not found. Reading from original TIFF: {tif_path}")
+                with tifffile.TiffFile(tif_path) as tif:
+                    corrected_data = tif.asarray()
+                    image_shape = corrected_data.shape[1:]  # Assuming (frames, height, width)
             
             # Try to load CNMF components if they exist
             cnmf_components = load_cnmf_components(slice_name, slice_output_dir, output_dir, slice_logger)
@@ -471,11 +678,13 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
                 with h5py.File(os.path.join(slice_output_dir, f"{slice_name}_traces.h5"), 'r') as f:
                     bg_corrected_data = f['bg_corrected_traces'][:]
                     roi_masks = f['roi_masks'][:]
-            except Exception as e:
-                slice_logger.error(f"Error loading trace data: {str(e)}")
+            except FileNotFoundError:
+                slice_logger.warning(f"Traces H5 file not found for {slice_name}")
+                # Handle this case based on your pipeline's requirements
+                # You might want to re-extract ROIs or skip this slice
                 return {
                     "slice_name": slice_name,
-                    "error": f"Failed to load trace data: {str(e)}",
+                    "error": "Traces file not found",
                     "timing": {
                         "total": time.time() - start_time
                     }
@@ -486,6 +695,12 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
             analysis_start = time.time()
             slice_logger.info("Starting fluorescence analysis")
             
+            # Explicitly log what data is being used
+            slice_logger.info(f"Using background-subtracted data for analysis: Shape={bg_corrected_data.shape}")
+            
+            # Set a flag to indicate data is already preprocessed
+            config["analysis"]["use_preprocessed_data"] = False
+
             # Analyze fluorescence data - pass metadata parameter
             # Now returns both metrics and dF/F traces
             metrics_df, df_f_traces = analyze_fluorescence(
@@ -497,6 +712,8 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
                 output_dir=slice_output_dir,
                 metadata=metadata  # Pass metadata to enable condition-specific logic
             )
+
+            slice_logger.info("Analysis includes enhanced edge peak detection and slope metrics")
             
             # Add metadata columns
             for key, value in metadata.items():
@@ -528,7 +745,7 @@ def process_file_pair(tif_path, roi_path, output_dir, config, mode, process_id):
                 flagged_rois,
                 tif_path,
                 slice_output_dir,
-                config["visualization"],
+                config,
                 slice_logger,
                 metadata=metadata  # Pass metadata for condition-specific visualization
             )
@@ -793,6 +1010,9 @@ def main():
                 logger.info(f"Completed processing {Path(tif_path).stem}")
             except Exception as e:
                 logger.error(f"Error processing {Path(tif_path).stem}: {str(e)}")
+    
+    # Before the call
+    logger.info("Generating mouse-level summaries with enhanced slope and edge detection metrics")
     
     # Generate mouse-level summaries
     if args.mode in ["all", "analyze"]:

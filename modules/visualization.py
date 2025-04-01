@@ -63,8 +63,10 @@ def generate_visualizations(
     vis_dir = os.path.join(output_dir, "visualizations")
     os.makedirs(vis_dir, exist_ok=True)
     
-    # Create plot types based on condition
-    plot_types = config.get("plot_types", ["roi_map", "trace_overlay", "event_summary"])
+    # Get the visualization sub-config first, providing an empty dict as default
+    viz_config = config.get("visualization", {})
+    # Then get plot_types from the sub-config
+    plot_types = viz_config.get("plot_types", ["roi_map", "trace_overlay", "event_summary"])
     
     # Condition-specific visualization adjustments
     if condition == "0um":
@@ -92,7 +94,7 @@ def generate_visualizations(
                 metrics_df, 
                 os.path.join(vis_dir, "evoked_trace_overlay.png"),
                 title=f"Fluorescence Traces{title_suffix}",
-                highlight_frame_range=[100, 580],  # Highlight the evoked activity region
+                highlight_frame_range = config["analysis"]["condition_specific"][condition]["analysis_frames"],  # Highlight the evoked activity region
                 logger=logger
             )
     else:

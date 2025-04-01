@@ -1,0 +1,144 @@
+advanced_analysis:
+  enabled: false
+  methods:
+  - correlation
+  - clustering
+  - population_activity
+analysis:
+  active_threshold: 0.019999999999999997
+  analysis_frames:
+  - 100
+  - 580
+  baseline_frames:
+  - 0
+  - 100
+  baseline_method: percentile
+  baseline_n_frames: 10
+  baseline_percentile: 3
+  condition_specific:
+    0um:
+      active_metric: spont_peak_frequency
+      active_threshold: 0.02
+      analysis_frames:
+      - 0
+      - 580
+      baseline_frames:
+      - 0
+      - 100
+    10um:
+      active_metric: peak_amplitude
+      active_threshold: 0.019999999999999997
+      analysis_frames:
+      - 100
+      - 580
+      baseline_frames:
+      - 0
+      - 100
+    25um:
+      active_metric: peak_amplitude
+      active_threshold: 0.02
+      analysis_frames:
+      - 100
+      - 580
+      baseline_frames:
+      - 0
+      - 100
+  event_detection:
+    baseline_percentile: 10
+    min_duration: 2
+    threshold: 0.5
+  frame_rate: 1.67
+  peak_detection:
+    distance: 10
+    height: 0.02
+    prominence: 0.03
+    rel_height: 0.5
+    width: 2
+  qc_thresholds:
+    max_baseline_var: 15.0
+    max_motion_correlation: 0.6
+    min_event_count: 1
+    min_snr: 1.5
+  save_intermediate_traces: true
+  spontaneous_activity:
+    prominence: 0.03
+    width: 2
+  trace_save_format: csv
+motion_correction:
+  apply_before_photobleach: true
+  enabled: false
+  max_shift: 10
+  method: rigid
+  patch_size: 50
+preprocessing:
+  apply_cnmf: false
+  background_removal:
+    enabled: true
+    method: tophat
+    window_size: 7
+  correction_method: polynomial_detrend
+  cutoff_freq: 0.001
+  denoise:
+    enabled: true
+    method: anisotropic
+    params:
+      gamma: 0.1
+      kappa: 55
+      niter: 10
+      option: 1
+  first_degree: 1
+  generate_plot: true
+  median_filter_size: 3
+  polynomial_order: 3
+  roi_detrend_degree: 1
+  save_corrected_data: true
+  save_intermediate_traces: true
+  second_degree: 3
+  smoothing_sigma: 2.0
+  spatial_hp_sigma: 2.0
+  temporal_filter_order: 2
+  trace_save_format: csv
+  use_gpu: false
+  use_roi_masks: true
+roi_processing:
+  background:
+    background_dilation: 2
+    cutoff_freq: 0.001
+    dilation_size: 2
+    filter_order: 2
+    median_filter_size: 6
+    method: darkest_pixels
+    min_background_area: 200
+    percentile: 0.2
+    periphery_size: 2
+  optimization:
+    simplified_mode: true
+    spatial_downsample: 2
+    use_float16: true
+  pnr_refinement:
+    auto_determine: false
+    generate_plots: true
+    min_pnr: 8.0
+    noise_freq_cutoff: 0.2
+    percentile_threshold: 99.0
+    trace_smoothing: 1
+  save_intermediate_traces: true
+  steps:
+    extract_rois: true
+    refine_rois: false
+    refine_with_pnr: true
+    roi_specific_detrend: true
+    save_masks: true
+    subtract_background: true
+  trace_save_format: csv
+visualization:
+  event_color: '#d62728'
+  plot_types:
+  - roi_map
+  - trace_overlay
+  - event_summary
+  - quality_metrics
+  roi_color_map: viridis
+  save_individual_plots: true
+  save_summary_plots: true
+  trace_color: '#1f77b4'

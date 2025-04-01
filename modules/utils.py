@@ -112,7 +112,8 @@ def save_slice_data(slice_name, metrics_df, output_dir, logger):
 
 def save_mouse_summary(mouse_id, slice_results, output_dir, logger):
     """
-    Create a summary Excel file for a mouse containing data from all slices.
+    Create a summary Excel file for a mouse containing data from all slices,
+    with each slice as a separate row, including enhanced metrics for PCA.
     
     Parameters
     ----------
@@ -125,14 +126,34 @@ def save_mouse_summary(mouse_id, slice_results, output_dir, logger):
     logger : logging.Logger
         Logger object
     """
-    logger.info(f"Creating summary for mouse {mouse_id}")
+    logger.info(f"Creating summary for mouse {mouse_id} with enhanced PCA metrics")
     
     # Create a new Excel writer
     summary_path = os.path.join(output_dir, f"{mouse_id}_summary.xlsx")
     writer = pd.ExcelWriter(summary_path, engine='xlsxwriter')
     
-    # Dictionary to store aggregate statistics
-    aggregate_stats = {}
+    # List to store summary data with one row per slice
+    summary_data = []
+    
+    # Define all potential PCA metrics to include
+    # Signal quality metrics
+    signal_metrics = ["snr", "baseline_variability"]
+    # Shape metrics
+    shape_metrics = ["peak_width", "decay_time", "peak_asymmetry"]
+    # Slope metrics
+    slope_metrics = ["max_rise_slope", "avg_rise_slope", "overall_max_slope", "overall_avg_slope"]
+    # Temporal metrics
+    temporal_metrics = ["mean_iei", "cv_iei", "amplitude_cv"]
+    # Spectral metrics
+    spectral_metrics = ["dominant_frequency", "spectral_entropy", "power_ultra_low", 
+                       "power_low", "power_mid", "power_high"]
+    # Evoked metrics
+    evoked_metrics = ["evoked_half_width", "evoked_duration", "evoked_latency", 
+                     "evoked_max_rise_slope", "evoked_avg_rise_slope", "evoked_decay_slope",
+                     "evoked_reliability", "evoked_time_of_max_rise"]
+    
+    # All PCA metrics
+    all_pca_metrics = signal_metrics + shape_metrics + slope_metrics + temporal_metrics + spectral_metrics + evoked_metrics
     
     # Process each slice result
     for result in slice_results:
@@ -156,61 +177,61 @@ def save_mouse_summary(mouse_id, slice_results, output_dir, logger):
             # Add metrics as a sheet in the Excel file
             metrics_df.to_excel(writer, sheet_name=sheet_name, index=False)
             
-            # Calculate aggregate statistics
+            # Create summary row for this specific slice
+            summary_row = {
+                "Slice Name": slice_name,
+                "Condition": metadata.get("condition", "unknown"),
+                "Slice Type": metadata.get("slice_type", "unknown"),
+                "Slice Number": metadata.get("slice_number", "1"),
+                "Total ROIs": len(metrics_df),
+                "Active ROIs": metrics_df["is_active"].sum(),
+                "Active ROI %": (metrics_df["is_active"].sum() / len(metrics_df) * 100) if len(metrics_df) > 0 else 0,
+                "Mean Peak Amplitude": metrics_df["peak_amplitude"].mean() if "peak_amplitude" in metrics_df.columns else 0,
+                "Std Peak Amplitude": metrics_df["peak_amplitude"].std() if "peak_amplitude" in metrics_df.columns and len(metrics_df) > 1 else 0,
+                "Mean Distance to Lamina": metrics_df["distance_to_lamina"].mean() if "distance_to_lamina" in metrics_df.columns else 0,
+                "Mean Spontaneous Frequency": metrics_df["spont_peak_frequency"].mean() if "spont_peak_frequency" in metrics_df.columns else 0,
+                "Mean Area Under Curve": metrics_df["peak_area_under_curve"].mean() if "peak_area_under_curve" in metrics_df.columns else 0
+            }
+            
+            # Add PCA metrics to summary row
             condition = metadata.get("condition", "unknown")
-            slice_type = metadata.get("slice_type", "unknown")
-            slice_number = metadata.get("slice_number", "1")
             
-            # Create key for aggregate stats - group by condition and slice type
-            agg_key = f"{condition}_{slice_type}"
+            # Add metrics based on condition
+            for metric in all_pca_metrics:
+                # Check if column exists in dataframe - for different prefixes
+                col_options = [metric]
+                if not metric.startswith("evoked_") and not metric.startswith("spont_") and not metric.startswith("peak_"):
+                    # Try with different prefixes
+                    col_options.extend([f"peak_{metric}", f"spont_{metric}"])
+                
+                # Find the first matching column
+                matching_col = next((col for col in col_options if col in metrics_df.columns), None)
+                
+                if matching_col:
+                    # For evoked metrics, only include if this is an evoked condition
+                    if matching_col.startswith("evoked_") and condition not in ["10um", "25um"]:
+                        continue
+                        
+                    # Calculate mean and standard deviation
+                    mean_val = metrics_df[matching_col].mean()
+                    std_val = metrics_df[matching_col].std() if len(metrics_df) > 1 else 0
+                    
+                    # Format metric name for column header
+                    display_name = " ".join(matching_col.split("_")).title()
+                    summary_row[f"Mean {display_name}"] = mean_val
+                    summary_row[f"Std {display_name}"] = std_val
             
-            if agg_key not in aggregate_stats:
-                aggregate_stats[agg_key] = {
-                    "condition": condition,
-                    "slice_type": slice_type,
-                    "n_rois": 0,
-                    "n_active": 0,
-                    "mean_peak_amplitude": [],
-                    "mean_distance": [],
-                    "mean_spont_frequency": []
-                }
-            
-            # Update statistics
-            stats = aggregate_stats[agg_key]
-            stats["n_rois"] += len(metrics_df)
-            stats["n_active"] += metrics_df["is_active"].sum()
-            
-            # Collect values for statistical analysis
-            stats["mean_peak_amplitude"].extend(metrics_df["peak_amplitude"].values)
-            stats["mean_distance"].extend(metrics_df["distance_to_lamina"].values)
-            stats["mean_spont_frequency"].extend(metrics_df["spont_peak_frequency"].values)
+            summary_data.append(summary_row)
             
         except Exception as e:
             logger.error(f"Error processing metrics file {metrics_file}: {str(e)}")
     
-    # Create summary sheet
-    summary_data = []
-    
-    for agg_key, stats in aggregate_stats.items():
-        summary_row = {
-            "Condition": stats["condition"],
-            "Slice Type": stats["slice_type"],
-            "Total ROIs": stats["n_rois"],
-            "Active ROIs": stats["n_active"],
-            "Active ROI %": (stats["n_active"] / stats["n_rois"] * 100) if stats["n_rois"] > 0 else 0,
-            "Mean Peak Amplitude": np.mean(stats["mean_peak_amplitude"]) if stats["mean_peak_amplitude"] else 0,
-            "Std Peak Amplitude": np.std(stats["mean_peak_amplitude"]) if len(stats["mean_peak_amplitude"]) > 1 else 0,
-            "Mean Distance to Lamina": np.mean(stats["mean_distance"]) if stats["mean_distance"] else 0,
-            "Mean Spontaneous Frequency": np.mean(stats["mean_spont_frequency"]) if stats["mean_spont_frequency"] else 0
-        }
-        
-        summary_data.append(summary_row)
-    
     # Create summary DataFrame
     summary_df = pd.DataFrame(summary_data)
     
-    # Sort by condition and slice type
-    summary_df = summary_df.sort_values(["Condition", "Slice Type"])
+    # Sort by condition, slice type, and slice number
+    if not summary_df.empty:
+        summary_df = summary_df.sort_values(["Condition", "Slice Type", "Slice Number"])
     
     # Write summary sheet
     summary_df.to_excel(writer, sheet_name="Summary", index=False)
@@ -221,12 +242,39 @@ def save_mouse_summary(mouse_id, slice_results, output_dir, logger):
     
     # Add percentage format
     pct_format = workbook.add_format({'num_format': '0.0%'})
-    summary_sheet.set_column('E:E', None, pct_format)  # Apply to Active ROI % column
+    
+    # Find Active ROI % column (might not be exactly column F depending on setup)
+    active_roi_pct_col = None
+    for i, col in enumerate(summary_df.columns):
+        if col == "Active ROI %":
+            active_roi_pct_col = i
+            break
+    
+    if active_roi_pct_col is not None:
+        col_letter = chr(65 + active_roi_pct_col)  # Convert to Excel column letter (A, B, C, etc.)
+        summary_sheet.set_column(f'{col_letter}:{col_letter}', None, pct_format)
+    
+    # Create a second summary sheet with PCA-focused metrics
+    if not summary_df.empty:
+        # Filter columns to just include PCA-relevant metrics
+        pca_cols = ["Slice Name", "Condition", "Slice Type", "Slice Number", "Active ROIs"]
+        
+        for col in summary_df.columns:
+            if any(col.startswith(f"Mean {metric.title()}") for metric in [
+                "Snr", "Baseline", "Peak Width", "Decay", "Rise Slope", "Iei", 
+                "Evoked", "Spectral", "Power"
+            ]):
+                pca_cols.append(col)
+        
+        # Create PCA-focused sheet if we have relevant metrics
+        if len(pca_cols) > 5:  # More than just the basic columns
+            pca_summary = summary_df[pca_cols].copy()
+            pca_summary.to_excel(writer, sheet_name="PCA Metrics", index=False)
     
     # Close writer
     writer.close()
     
-    logger.info(f"Saved mouse summary to {summary_path}")
+    logger.info(f"Saved mouse summary with enhanced PCA metrics to {summary_path}")
 
 def calculate_lamina_distance(roi_masks, image_shape):
     """

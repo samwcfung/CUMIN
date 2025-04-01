@@ -525,190 +525,31 @@ def roi_specific_detrend(roi_traces, detrend_degree=1, logger=None):
     
     return detrended_traces
 
-def subtract_background(image_data, roi_data, roi_masks, config, logger=None, output_dir=None):
+def subtract_background(
+    image_data,
+    roi_data,
+    roi_masks,
+    bg_config,
+    logger,
+    output_dir=None
+):
     """
-    Subtract background from ROI fluorescence traces.
-    """
-    import numpy as np
-    from scipy.ndimage import binary_dilation, median_filter
-    from skimage.transform import resize
-    from scipy import signal
-    import os
-    import pandas as pd
-    
-    # Get method and parameters
-    method = config.get("method", "roi_periphery")
-    periphery_size = config.get("periphery_size", 2)
-    percentile = config.get("percentile", 0.1)
-    median_filter_size = config.get("median_filter_size", 3)
-    dilation_size = config.get("dilation_size", 2)
-    cutoff_freq = config.get("cutoff_freq", 0.001)
-    filter_order = config.get("filter_order", 2)
-    
-    # Check if we should save intermediate traces
-    save_intermediate = config.get("save_intermediate_traces", False) and output_dir is not None
-    
-    if logger:
-        logger.info(f"Subtracting background using method: {method}")
-
-    # Save original traces before subtraction if enabled
-    if save_intermediate:
-        traces_dir = os.path.join(output_dir, "intermediate_traces")
-        os.makedirs(traces_dir, exist_ok=True)
-        
-        before_bg_path = os.path.join(traces_dir, "3_before_background_subtraction.csv")
-        pd.DataFrame(roi_data).to_csv(before_bg_path)
-        logger.info(f"Saved traces before background subtraction to {before_bg_path}")
-    
-    # Get dimensions
-    n_rois = len(roi_masks)
-    n_frames = image_data.shape[0]
-    _, img_height, img_width = image_data.shape
-    
-    # Check if we need to resize the masks
-    try:
-        mask_height, mask_width = roi_masks[0].shape
-        needs_resize = (mask_height != img_height or mask_width != img_width)
-    except:
-        needs_resize = True
-        
-    # Resize masks if needed
-    if needs_resize:
-        if logger:
-            logger.warning(f"ROI mask dimensions don't match image dimensions in background subtraction")
-            logger.info(f"Resizing ROI masks for background subtraction")
-            
-        resized_masks = []
-        for mask in roi_masks:
-            # Convert to numpy array if needed
-            if not isinstance(mask, np.ndarray):
-                mask = np.array(mask, dtype=bool)
-                
-            # Convert to float for resize operation
-            mask_float = mask.astype(np.float32)
-            
-            # Resize using nearest-neighbor interpolation
-            resized_mask = resize(mask_float, (img_height, img_width), 
-                                 order=0, preserve_range=True, anti_aliasing=False)
-                                 
-            # Convert back to boolean
-            resized_mask = resized_mask > 0.5
-            resized_masks.append(resized_mask)
-            
-        roi_masks = resized_masks
-        
-        if logger:
-            logger.info(f"ROI masks resized for background subtraction")
-    
-    # Initialize background-corrected traces
-    bg_corrected = np.copy(roi_data)
-    
-    # Apply background subtraction based on method
-    if method == "roi_periphery":
-        if logger:
-            logger.info(f"Using ROI periphery method with periphery size {periphery_size}")
-        
-        for i, mask in enumerate(roi_masks):
-            # Create periphery mask
-            expanded_mask = binary_dilation(mask, iterations=periphery_size)
-            periphery_mask = expanded_mask & ~mask
-            
-            # Skip if periphery is empty
-            if not np.any(periphery_mask):
-                if logger:
-                    logger.warning(f"ROI {i+1}: No valid periphery pixels, skipping background subtraction")
-                continue
-            
-            # Extract background traces from periphery
-            bg_trace = np.zeros(n_frames)
-            for t in range(n_frames):
-                bg_values = image_data[t][periphery_mask]
-                bg_trace[t] = np.mean(bg_values)
-            
-            # Subtract background
-            bg_corrected[i] = roi_data[i] - bg_trace
-            
-    elif method == "darkest_pixels":
-        if logger:
-            logger.info(f"Using darkest pixels method with percentile {percentile}")
-        
-        # Create global darkest pixels mask
-        darkest_pixels_mask = np.zeros((img_height, img_width), dtype=bool)
-        
-        # Compute average intensity per pixel
-        avg_intensity = np.mean(image_data, axis=0)
-        
-        # Find darkest percentile
-        threshold = np.percentile(avg_intensity, percentile * 100)
-        darkest_pixels_mask = avg_intensity <= threshold
-        
-        # Apply median filter to remove noise
-        if median_filter_size > 0:
-            darkest_pixels_mask = median_filter(darkest_pixels_mask.astype(float), 
-                                               size=median_filter_size) > 0.5
-        
-        # Dilate the mask to get a more robust background region
-        if dilation_size > 0:
-            darkest_pixels_mask = binary_dilation(darkest_pixels_mask, iterations=dilation_size)
-        
-        # Extract background trace
-        bg_trace = np.zeros(n_frames)
-        for t in range(n_frames):
-            bg_values = image_data[t][darkest_pixels_mask]
-            if len(bg_values) > 0:
-                bg_trace[t] = np.mean(bg_values)
-        
-        # Apply subtraction to all ROIs
-        for i in range(n_rois):
-            bg_corrected[i] = roi_data[i] - bg_trace
-            
-    elif method == "lowpass_filter":
-        if logger:
-            logger.info(f"Using lowpass filter method with cutoff {cutoff_freq}, order {filter_order}")
-        
-        # Design Butterworth low-pass filter
-        b, a = signal.butter(filter_order, cutoff_freq, 'low')
-        
-        # Apply to each ROI trace
-        for i in range(n_rois):
-            # Get the ROI trace
-            trace = roi_data[i]
-            
-            # Apply filter to capture slow changes (background)
-            bg_trace = signal.filtfilt(b, a, trace)
-            
-            # Subtract background (slow trend)
-            bg_corrected[i] = trace - bg_trace
-    
-    else:
-        if logger:
-            logger.warning(f"Unknown background subtraction method: {method}, using original traces")
-    
-    if save_intermediate:
-        after_bg_path = os.path.join(traces_dir, "4_after_background_subtraction.csv")
-        pd.DataFrame(bg_corrected).to_csv(after_bg_path)
-        logger.info(f"Saved traces after background subtraction to {after_bg_path}")
-    
-    return bg_corrected
-
-def subtract_global_background(image_data, roi_data, roi_masks, config, logger=None, output_dir=None):
-    """
-    Subtract background based on the darkest region in the first frame.
+    Extract background signal and subtract from ROI fluorescence traces.
     
     Parameters
     ----------
     image_data : numpy.ndarray
-        Input data with shape (frames, height, width)
+        Preprocessed image data (frames, height, width)
     roi_data : numpy.ndarray
-        ROI fluorescence traces with shape (n_rois, n_frames)
-    roi_masks : list
-        List of ROI masks
-    config : dict
-        Configuration parameters
-    logger : logging.Logger, optional
-        Logger for status updates
+        ROI fluorescence traces (n_rois, n_frames)
+    roi_masks : list of numpy.ndarray
+        Binary masks for each ROI
+    bg_config : dict
+        Background subtraction configuration
+    logger : logging.Logger
+        Logger object
     output_dir : str, optional
-        Directory to save intermediate results
+        Output directory for saving intermediate traces
         
     Returns
     -------
@@ -716,106 +557,511 @@ def subtract_global_background(image_data, roi_data, roi_masks, config, logger=N
         Background-subtracted ROI traces
     """
     import numpy as np
-    from skimage.measure import label, regionprops
-    from scipy.ndimage import binary_dilation
-    import os
     import pandas as pd
+    import os
+    import time
+    from scipy.ndimage import binary_dilation
+    from scipy.signal import medfilt
     
-    # Get parameters
-    min_area_size = config.get("min_background_area", 200)  # Minimum pixel area for background
-    dilation_size = config.get("background_dilation", 0)    # Optional dilation of the mask
+    start_time = time.time()
+    logger.info("Starting background subtraction")
     
-    if logger:
-        logger.info(f"Subtracting global background using darkest region in first frame")
-        logger.info(f"Minimum background area: {min_area_size} pixels")
+    # Get method from config
+    method = bg_config.get("method", "darkest_pixels")
+    logger.info(f"Using background method: {method}")
     
-    # Check if saving intermediates is enabled
-    save_intermediate = config.get("save_intermediate_traces", False)
-    if save_intermediate and output_dir is not None:
+    # Get number of ROIs and frames
+    n_rois, n_frames = roi_data.shape
+    
+    # Create array to store original ROI data for later comparison
+    original_roi_data = roi_data.copy()
+    
+    # Create array for background traces
+    bg_traces = np.zeros((n_rois, n_frames))
+    
+    # Parameters for extracting background
+    if method == "darkest_pixels":
+        # Get parameters
+        percentile = bg_config.get("percentile", 0.4)
+        median_filter_size = bg_config.get("median_filter_size", 5)
+        dilation_size = bg_config.get("dilation_size", 2)
+        
+        # Create background mask
+        roi_combined = np.zeros(roi_masks[0].shape, dtype=bool)
+        for mask in roi_masks:
+            roi_combined = roi_combined | mask
+            
+        # Dilate ROI mask to avoid pixels close to ROIs
+        if dilation_size > 0:
+            element = np.ones((dilation_size*2+1, dilation_size*2+1), dtype=bool)
+            roi_combined = binary_dilation(roi_combined, element)
+            
+        # Invert to get background mask
+        bg_mask = ~roi_combined
+        
+        # Extract background trace from darkest pixels percentile
+        logger.info(f"Extracting {percentile} percentile background from {np.sum(bg_mask)} background pixels")
+        
+        # For each frame, find the background value
+        bg_values = np.zeros(n_frames)
+        for f in range(n_frames):
+            frame = image_data[f]
+            bg_pixels = frame[bg_mask]
+            if len(bg_pixels) > 0:
+                bg_values[f] = np.percentile(bg_pixels, percentile * 100)
+            else:
+                logger.warning(f"No background pixels found in frame {f}")
+                # Use the value from previous frame if available
+                bg_values[f] = bg_values[f-1] if f > 0 else 0
+                
+        # Apply median filter to reduce noise in background trace if specified
+        if median_filter_size > 0:
+            bg_values = medfilt(bg_values, median_filter_size)
+            
+        # Use the same background trace for all ROIs
+        for i in range(n_rois):
+            bg_traces[i] = bg_values
+            
+    elif method == "roi_periphery":
+        # Extract background from periphery of each ROI
+        periphery_size = bg_config.get("periphery_size", 2)
+        logger.info(f"Extracting background from ROI periphery with size {periphery_size}")
+        
+        for i, mask in enumerate(roi_masks):
+            # Dilate mask
+            dilated = binary_dilation(mask, np.ones((periphery_size*2+1, periphery_size*2+1), dtype=bool))
+            
+            # Create periphery mask (dilated - original)
+            periphery = dilated & ~mask
+            
+            # Skip if periphery is empty
+            if not np.any(periphery):
+                logger.warning(f"ROI {i+1} has empty periphery, using global method")
+                # Use the darkest pixels method as fallback
+                bg_traces[i] = bg_values if 'bg_values' in locals() else np.zeros(n_frames)
+                continue
+                
+            # Extract background from periphery for each frame
+            for f in range(n_frames):
+                periphery_pixels = image_data[f][periphery]
+                bg_traces[i, f] = np.percentile(periphery_pixels, percentile * 100)
+            
+            # Apply median filter to reduce noise
+            if median_filter_size > 0:
+                bg_traces[i] = medfilt(bg_traces[i], median_filter_size)
+                
+    elif method == "global_background":
+        # Handle separately to avoid code duplication
+        return subtract_global_background(
+            image_data,
+            roi_data,
+            roi_masks,
+            bg_config,
+            logger,
+            output_dir=output_dir
+        )
+    
+    else:
+        logger.warning(f"Unknown background method: {method}, using darkest_pixels")
+        # Fallback to darkest_pixels method
+        percentile = bg_config.get("percentile", 0.4)
+        median_filter_size = bg_config.get("median_filter_size", 5)
+        
+        # Create global background mask (all pixels)
+        bg_mask = np.ones(roi_masks[0].shape, dtype=bool)
+        
+        # Extract background trace
+        bg_values = np.zeros(n_frames)
+        for f in range(n_frames):
+            frame = image_data[f]
+            bg_pixels = frame[bg_mask]
+            bg_values[f] = np.percentile(bg_pixels, percentile * 100)
+            
+        # Apply median filter
+        if median_filter_size > 0:
+            bg_values = medfilt(bg_values, median_filter_size)
+            
+        # Use the same background trace for all ROIs
+        for i in range(n_rois):
+            bg_traces[i] = bg_values
+    
+    # Save trace before background subtraction
+    save_intermediate = bg_config.get("save_intermediate_traces", False)
+    if save_intermediate and output_dir:
         traces_dir = os.path.join(output_dir, "intermediate_traces")
         os.makedirs(traces_dir, exist_ok=True)
         
-        # Save before background subtraction
-        before_bg_path = os.path.join(traces_dir, "3_before_global_background_subtraction.csv")
-        pd.DataFrame(roi_data).to_csv(before_bg_path)
-        logger.info(f"Saved traces before global background subtraction to {before_bg_path}")
-    
-    # Get the first frame
-    first_frame = image_data[0]
-    
-    # Create a binary mask of all ROIs combined
-    combined_mask = np.zeros_like(first_frame, dtype=bool)
-    for mask in roi_masks:
-        combined_mask = combined_mask | mask
-    
-    # Dilate the ROI mask to avoid using pixels too close to ROIs
-    if dilation_size > 0:
-        combined_mask = binary_dilation(combined_mask, iterations=dilation_size)
-    
-    # Invert the mask to get potential background areas
-    background_mask = ~combined_mask
-    
-    # Find the darkest 5% of pixels in the first frame
-    if np.any(background_mask):
-        background_pixels = first_frame[background_mask]
-        dark_threshold = np.percentile(background_pixels, 5)
-        darkest_pixels = (first_frame <= dark_threshold) & background_mask
+        # Save original traces
+        roi_traces_path = os.path.join(traces_dir, "3_roi_traces_before_bg.csv")
+        pd.DataFrame(original_roi_data).to_csv(roi_traces_path)
+        logger.info(f"Saved original ROI traces to {roi_traces_path}")
         
-        if logger:
-            logger.info(f"Found {np.sum(darkest_pixels)} dark pixels below threshold {dark_threshold:.2f}")
+        # Save background traces
+        bg_traces_path = os.path.join(traces_dir, "3_background_traces.csv")
+        pd.DataFrame(bg_traces).to_csv(bg_traces_path)
+        logger.info(f"Saved background traces to {bg_traces_path}")
+    
+    # Check if we need to apply slope correction
+    correct_slope = bg_config.get("correct_slope", False)
+    
+    if correct_slope:
+        # Get slope correction parameters
+        slope_window = bg_config.get("slope_window", [0, 200])  # Default to first 200 frames
+        slope_window = [max(0, slope_window[0]), min(n_frames-1, slope_window[1])]
         
-        # Label connected regions
-        labeled_regions = label(darkest_pixels)
-        regions = regionprops(labeled_regions)
+        # For storing slope-corrected traces
+        slope_corrected_roi = np.zeros_like(roi_data)
+        slope_corrected_bg = np.zeros_like(bg_traces)
         
-        # Find the largest region that meets the minimum size requirement
-        valid_regions = [r for r in regions if r.area >= min_area_size]
+        logger.info(f"Applying slope correction to ROI and background traces (frames {slope_window[0]}-{slope_window[1]})")
         
-        if valid_regions:
-            # Sort by mean intensity (darkest first)
-            valid_regions.sort(key=lambda r: np.mean(first_frame[labeled_regions == r.label]))
+        for i in range(n_rois):
+            # Correct ROI trace
+            roi_trace = original_roi_data[i]
+            roi_window = roi_trace[slope_window[0]:slope_window[1]+1]
+            roi_x = np.arange(len(roi_window))
             
-            # Use the darkest valid region
-            darkest_region = valid_regions[0]
-            background_region_mask = labeled_regions == darkest_region.label
+            # Create mask to exclude outliers/peaks in slope estimation
+            # Find ROI peaks to exclude from baseline fitting
+            from scipy.signal import find_peaks
+            roi_peaks, _ = find_peaks(roi_window, prominence=bg_config.get("peak_prominence", 0.05))
             
-            if logger:
-                logger.info(f"Using background region with {darkest_region.area} pixels")
-                logger.info(f"Background region mean intensity: {np.mean(first_frame[background_region_mask]):.2f}")
+            # Create mask excluding peaks and their surrounding frames
+            mask = np.ones(len(roi_window), dtype=bool)
+            for peak in roi_peaks:
+                start = max(0, peak - 2)
+                end = min(len(roi_window), peak + 3)
+                mask[start:end] = False
             
-            # Calculate background trace from this region across all frames
-            background_trace = np.zeros(image_data.shape[0])
-            for i in range(image_data.shape[0]):
-                background_trace[i] = np.mean(image_data[i][background_region_mask])
+            # If all frames would be excluded, keep at least 50%
+            if not np.any(mask) and len(roi_window) > 0:
+                logger.warning(f"All frames would be excluded for ROI {i+1}. Using 50% of frames.")
+                mask = np.ones(len(roi_window), dtype=bool)
+                if len(roi_peaks) > 0:
+                    mask[roi_peaks] = False  # Just exclude the exact peaks
             
-            # Subtract background from all ROI traces
-            bg_corrected_data = roi_data - background_trace[None, :]
-            
-            if logger:
-                logger.info(f"Subtracted global background with mean value {np.mean(background_trace):.2f}")
-            
-            # Save after background subtraction if enabled
-            if save_intermediate and output_dir is not None:
-                # Save background trace
-                bg_trace_path = os.path.join(traces_dir, "global_background_trace.csv")
-                pd.DataFrame(background_trace, columns=["intensity"]).to_csv(bg_trace_path)
-                logger.info(f"Saved global background trace to {bg_trace_path}")
+            # Fit line to non-peak frames
+            if np.sum(mask) > 1:
+                x_fit = roi_x[mask]
+                y_fit = roi_window[mask]
                 
-                # Save corrected traces
-                after_bg_path = os.path.join(traces_dir, "4_after_global_background_subtraction.csv")
-                pd.DataFrame(bg_corrected_data).to_csv(after_bg_path)
-                logger.info(f"Saved traces after global background subtraction to {after_bg_path}")
+                # Use polyfit for linear regression: y = mx + b
+                roi_m, roi_b = np.polyfit(x_fit, y_fit, 1)
+                
+                # Calculate the trend using the estimated slope and intercept
+                roi_trend = roi_m * np.arange(n_frames) + roi_b
+                
+                # Calculate the mean of the baseline points used for fitting
+                roi_baseline_mean = np.mean(roi_window[mask])
+                
+                # Create a flat baseline at the mean level
+                roi_flat_baseline = np.ones(n_frames) * roi_baseline_mean
+                
+                # Replace the trended baseline with a flat baseline
+                slope_corrected_roi[i] = roi_trace - roi_trend + roi_flat_baseline
+                
+                # Log slope information if significant
+                if abs(roi_m) > 1e-4:
+                    logger.info(f"ROI {i+1} slope: {roi_m:.6f}")
+            else:
+                logger.warning(f"Not enough non-peak points for ROI {i+1}. Using original trace.")
+                slope_corrected_roi[i] = roi_trace
             
-            return bg_corrected_data
+            # Correct background trace
+            bg_trace = bg_traces[i]
+            bg_window = bg_trace[slope_window[0]:slope_window[1]+1]
+            bg_x = np.arange(len(bg_window))
+            
+            # No need to exclude peaks for background, just fit the line
+            bg_m, bg_b = np.polyfit(bg_x, bg_window, 1)
+            
+            # Calculate the trend
+            bg_trend = bg_m * np.arange(n_frames) + bg_b
+            
+            # Calculate the mean
+            bg_baseline_mean = np.mean(bg_window)
+            
+            # Create flat baseline
+            bg_flat_baseline = np.ones(n_frames) * bg_baseline_mean
+            
+            # Replace trend with flat baseline
+            slope_corrected_bg[i] = bg_trace - bg_trend + bg_flat_baseline
+            
+            # Log slope information if significant
+            if abs(bg_m) > 1e-4:
+                logger.info(f"Background {i+1} slope: {bg_m:.6f}")
+        
+        # Use the slope-corrected traces for subtraction
+        corrected_roi_data = original_roi_data = slope_corrected_roi
+        bg_traces = slope_corrected_bg
+        
+        # Save slope-corrected traces
+        if save_intermediate and output_dir:
+            # Save slope-corrected ROI traces
+            roi_slope_path = os.path.join(traces_dir, "3_roi_traces_slope_corrected.csv")
+            pd.DataFrame(slope_corrected_roi).to_csv(roi_slope_path)
+            logger.info(f"Saved slope-corrected ROI traces to {roi_slope_path}")
+            
+            # Save slope-corrected background traces
+            bg_slope_path = os.path.join(traces_dir, "3_background_traces_slope_corrected.csv")
+            pd.DataFrame(slope_corrected_bg).to_csv(bg_slope_path)
+            logger.info(f"Saved slope-corrected background traces to {bg_slope_path}")
+    
+    # Subtract background from ROI traces
+    bg_subtracted = original_roi_data - bg_traces
+    
+    # Save background-subtracted traces
+    if save_intermediate and output_dir:
+        bg_subtracted_path = os.path.join(traces_dir, "4_after_background_subtraction.csv")
+        pd.DataFrame(bg_subtracted).to_csv(bg_subtracted_path)
+        logger.info(f"Saved background-subtracted traces to {bg_subtracted_path}")
+    
+    logger.info(f"Background subtraction completed in {time.time() - start_time:.2f} seconds")
+    return bg_subtracted
+
+def subtract_global_background(
+    image_data,
+    roi_data,
+    roi_masks,
+    bg_config,
+    logger,
+    output_dir=None
+):
+    """
+    Apply global background subtraction using overall image statistics.
+    This is especially useful when individual ROI backgrounds are noisy.
+    
+    Parameters
+    ----------
+    image_data : numpy.ndarray
+        Preprocessed image data (frames, height, width)
+    roi_data : numpy.ndarray
+        ROI fluorescence traces (n_rois, n_frames)
+    roi_masks : list of numpy.ndarray
+        Binary masks for each ROI
+    bg_config : dict
+        Background subtraction configuration
+    logger : logging.Logger
+        Logger object
+    output_dir : str, optional
+        Output directory for saving intermediate traces
+        
+    Returns
+    -------
+    numpy.ndarray
+        Background-subtracted ROI traces
+    """
+    import numpy as np
+    import pandas as pd
+    import os
+    import time
+    from scipy.signal import medfilt
+    
+    start_time = time.time()
+    logger.info("Starting global background subtraction")
+    
+    # Get number of ROIs and frames
+    n_rois, n_frames = roi_data.shape
+    
+    # Create array to store original ROI data for later comparison
+    original_roi_data = roi_data.copy()
+    
+    # Parameters for extracting background
+    percentile = bg_config.get("percentile", 0.4)
+    median_filter_size = bg_config.get("median_filter_size", 5)
+    min_background_area = bg_config.get("min_background_area", 500)
+    background_dilation = bg_config.get("background_dilation", 10)
+    
+    # Create combined ROI mask
+    height, width = roi_masks[0].shape
+    roi_combined = np.zeros((height, width), dtype=bool)
+    for mask in roi_masks:
+        roi_combined = roi_combined | mask
+    
+    # Dilate to avoid pixels near ROIs
+    if background_dilation > 0:
+        from scipy.ndimage import binary_dilation
+        element = np.ones((background_dilation*2+1, background_dilation*2+1), dtype=bool)
+        dilated = binary_dilation(roi_combined, structure=element)
+    else:
+        dilated = roi_combined
+    
+    # Invert to get background mask
+    bg_mask = ~dilated
+    
+    # Check if we have enough background pixels
+    if np.sum(bg_mask) < min_background_area:
+        logger.warning(f"Background area too small ({np.sum(bg_mask)} pixels). Using smaller dilation.")
+        # Try with smaller dilation
+        for dilation_size in [5, 2, 0]:
+            if dilation_size > 0:
+                element = np.ones((dilation_size*2+1, dilation_size*2+1), dtype=bool)
+                dilated = binary_dilation(roi_combined, structure=element)
+            else:
+                dilated = roi_combined
+            bg_mask = ~dilated
+            if np.sum(bg_mask) >= min_background_area:
+                logger.info(f"Using dilation size {dilation_size} with {np.sum(bg_mask)} background pixels")
+                break
+    
+    # Extract global background trace
+    logger.info(f"Extracting global background using {percentile} percentile from {np.sum(bg_mask)} pixels")
+    
+    # Calculate background for each frame
+    bg_values = np.zeros(n_frames)
+    for f in range(n_frames):
+        frame = image_data[f]
+        bg_pixels = frame[bg_mask]
+        if len(bg_pixels) > 0:
+            bg_values[f] = np.percentile(bg_pixels, percentile * 100)
         else:
-            if logger:
-                logger.warning(f"No valid background regions found. Largest dark region has {max([r.area for r in regions]) if regions else 0} pixels")
+            logger.warning(f"No background pixels in frame {f}")
+            bg_values[f] = bg_values[f-1] if f > 0 else 0
     
-    # If we get here, something went wrong - return original data
-    if logger:
-        logger.warning("Could not identify suitable background region. Using original traces.")
+    # Apply median filter to reduce noise
+    if median_filter_size > 0:
+        bg_values = medfilt(bg_values, median_filter_size)
     
-    return roi_data
+    # Create background trace array (same for all ROIs)
+    bg_traces = np.zeros((n_rois, n_frames))
+    for i in range(n_rois):
+        bg_traces[i] = bg_values
+    
+    # Save traces before background subtraction
+    save_intermediate = bg_config.get("save_intermediate_traces", False)
+    if save_intermediate and output_dir:
+        traces_dir = os.path.join(output_dir, "intermediate_traces")
+        os.makedirs(traces_dir, exist_ok=True)
+        
+        # Save original traces
+        roi_traces_path = os.path.join(traces_dir, "3_roi_traces_before_bg.csv")
+        pd.DataFrame(original_roi_data).to_csv(roi_traces_path)
+        logger.info(f"Saved original ROI traces to {roi_traces_path}")
+        
+        # Save background traces
+        bg_traces_path = os.path.join(traces_dir, "3_background_traces.csv")
+        pd.DataFrame(bg_traces).to_csv(bg_traces_path)
+        logger.info(f"Saved background traces to {bg_traces_path}")
+    
+    # Check if we need to apply slope correction
+    correct_slope = bg_config.get("correct_slope", False)
+    
+    if correct_slope:
+        # Get slope correction parameters
+        slope_window = bg_config.get("slope_window", [0, 200])  # Default to first 200 frames
+        slope_window = [max(0, slope_window[0]), min(n_frames-1, slope_window[1])]
+        
+        # For storing slope-corrected traces
+        slope_corrected_roi = np.zeros_like(roi_data)
+        slope_corrected_bg = np.zeros_like(bg_traces)
+        
+        logger.info(f"Applying slope correction to ROI and background traces (frames {slope_window[0]}-{slope_window[1]})")
+        
+        for i in range(n_rois):
+            # Correct ROI trace
+            roi_trace = original_roi_data[i]
+            roi_window = roi_trace[slope_window[0]:slope_window[1]+1]
+            roi_x = np.arange(len(roi_window))
+            
+            # Create mask to exclude outliers/peaks in slope estimation
+            from scipy.signal import find_peaks
+            roi_peaks, _ = find_peaks(roi_window, prominence=bg_config.get("peak_prominence", 0.05))
+            
+            # Create mask excluding peaks and their surrounding frames
+            mask = np.ones(len(roi_window), dtype=bool)
+            for peak in roi_peaks:
+                start = max(0, peak - 2)
+                end = min(len(roi_window), peak + 3)
+                mask[start:end] = False
+            
+            # If all frames would be excluded, keep at least 50%
+            if not np.any(mask) and len(roi_window) > 0:
+                logger.warning(f"All frames would be excluded for ROI {i+1}. Using 50% of frames.")
+                mask = np.ones(len(roi_window), dtype=bool)
+                if len(roi_peaks) > 0:
+                    mask[roi_peaks] = False  # Just exclude the exact peaks
+            
+            # Fit line to non-peak frames
+            if np.sum(mask) > 1:
+                x_fit = roi_x[mask]
+                y_fit = roi_window[mask]
+                
+                # Use polyfit for linear regression: y = mx + b
+                roi_m, roi_b = np.polyfit(x_fit, y_fit, 1)
+                
+                # Calculate the trend using the estimated slope and intercept
+                roi_trend = roi_m * np.arange(n_frames) + roi_b
+                
+                # Calculate the mean of the baseline points used for fitting
+                roi_baseline_mean = np.mean(roi_window[mask])
+                
+                # Create a flat baseline at the mean level
+                roi_flat_baseline = np.ones(n_frames) * roi_baseline_mean
+                
+                # Replace the trended baseline with a flat baseline
+                slope_corrected_roi[i] = roi_trace - roi_trend + roi_flat_baseline
+                
+                # Log slope information if significant
+                if abs(roi_m) > 1e-4:
+                    logger.info(f"ROI {i+1} slope: {roi_m:.6f}")
+            else:
+                logger.warning(f"Not enough non-peak points for ROI {i+1}. Using original trace.")
+                slope_corrected_roi[i] = roi_trace
+        
+        # Correct global background trace (only need to do this once)
+        bg_window = bg_values[slope_window[0]:slope_window[1]+1]
+        bg_x = np.arange(len(bg_window))
+        
+        # No need to exclude peaks for background, just fit the line
+        bg_m, bg_b = np.polyfit(bg_x, bg_window, 1)
+        
+        # Calculate the trend
+        bg_trend = bg_m * np.arange(n_frames) + bg_b
+        
+        # Calculate the mean
+        bg_baseline_mean = np.mean(bg_window)
+        
+        # Create flat baseline
+        bg_flat_baseline = np.ones(n_frames) * bg_baseline_mean
+        
+        # Replace trend with flat baseline
+        corrected_bg_values = bg_values - bg_trend + bg_flat_baseline
+        
+        # Log slope information if significant
+        if abs(bg_m) > 1e-4:
+            logger.info(f"Global background slope: {bg_m:.6f}")
+        
+        # Copy to all ROIs
+        for i in range(n_rois):
+            slope_corrected_bg[i] = corrected_bg_values
+        
+        # Use the slope-corrected traces for subtraction
+        original_roi_data = slope_corrected_roi
+        bg_traces = slope_corrected_bg
+        
+        # Save slope-corrected traces
+        if save_intermediate and output_dir:
+            # Save slope-corrected ROI traces
+            roi_slope_path = os.path.join(traces_dir, "3_roi_traces_slope_corrected.csv")
+            pd.DataFrame(slope_corrected_roi).to_csv(roi_slope_path)
+            logger.info(f"Saved slope-corrected ROI traces to {roi_slope_path}")
+            
+            # Save slope-corrected background traces
+            bg_slope_path = os.path.join(traces_dir, "3_background_traces_slope_corrected.csv")
+            pd.DataFrame(slope_corrected_bg).to_csv(bg_slope_path)
+            logger.info(f"Saved slope-corrected background traces to {bg_slope_path}")
+    
+    # Subtract background from ROI traces
+    bg_subtracted = original_roi_data - bg_traces
+    
+    # Save background-subtracted traces
+    if save_intermediate and output_dir:
+        bg_subtracted_path = os.path.join(traces_dir, "4_after_background_subtraction.csv")
+        pd.DataFrame(bg_subtracted).to_csv(bg_subtracted_path)
+        logger.info(f"Saved background-subtracted traces to {bg_subtracted_path}")
+    
+    logger.info(f"Global background subtraction completed in {time.time() - start_time:.2f} seconds")
+    return bg_subtracted
 
 def extract_roi_fluorescence_with_cnmf(
     roi_path, 

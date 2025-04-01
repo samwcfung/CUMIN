@@ -26,6 +26,48 @@ from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.preprocessing import StandardScaler
 import ot  # For EMD (optimal transport)
 
+def run_advanced_analysis(
+    fluorescence_data, 
+    roi_masks, 
+    metrics_df, 
+    output_dir, 
+    config, 
+    logger
+):
+    """
+    Run advanced fluorescence analysis if enabled in configuration.
+    
+    Parameters
+    ----------
+    fluorescence_data : numpy.ndarray
+        Background-corrected fluorescence traces with shape (n_rois, n_frames)
+    roi_masks : list
+        List of ROI masks
+    metrics_df : pandas.DataFrame
+        DataFrame containing metrics for each ROI
+    output_dir : str
+        Directory to save the analysis results
+    config : dict
+        Configuration parameters
+    logger : logging.Logger
+        Logger object
+        
+    Returns
+    -------
+    dict or None
+        Advanced analysis results if advanced analysis is enabled, None otherwise
+    """
+    # Check if advanced analysis is enabled
+    if not config.get("advanced_analysis", {}).get("enabled", False):
+        logger.info("Advanced analysis is disabled in configuration, skipping")
+        return None
+    
+    # Create analyzer and run analysis
+    analyzer = AdvancedFluoroAnalysis(config.get("advanced_analysis", {}), logger)
+    results = analyzer.run_analysis(fluorescence_data, roi_masks, metrics_df, output_dir)
+    
+    return results
+
 class AdvancedFluoroAnalysis:
     """Advanced fluorescence analysis methods."""
     
@@ -52,7 +94,7 @@ class AdvancedFluoroAnalysis:
         # ML parameters
         self.ml_config = config.get("ml", {})
         self.n_clusters = self.ml_config.get("n_clusters", 3)
-        self.feature_selection = self.ml_config.get("feature_selection", ["peak_amplitude", "rise_time", "std_df_f"])
+        self.feature_selection = self.ml_config.get("feature_selection", ["peak_amplitude", "peak_rise_time", "std_df_f"]) #changed from "rise_time"
         
         # Correlation parameters
         self.corr_config = config.get("correlation", {})
@@ -905,46 +947,3 @@ class AdvancedFluoroAnalysis:
                         f.write("\n")
         
         self.logger.info(f"Saved advanced analysis summary to {summary_path}")
-
-
-def run_advanced_analysis(
-    fluorescence_data, 
-    roi_masks, 
-    metrics_df, 
-    output_dir, 
-    config, 
-    logger
-):
-    """
-    Run advanced fluorescence analysis if enabled in configuration.
-    
-    Parameters
-    ----------
-    fluorescence_data : numpy.ndarray
-        Background-corrected fluorescence traces with shape (n_rois, n_frames)
-    roi_masks : list
-        List of ROI masks
-    metrics_df : pandas.DataFrame
-        DataFrame containing metrics for each ROI
-    output_dir : str
-        Directory to save the analysis results
-    config : dict
-        Configuration parameters
-    logger : logging.Logger
-        Logger object
-        
-    Returns
-    -------
-    dict or None
-        Advanced analysis results if advanced analysis is enabled, None otherwise
-    """
-    # Check if advanced analysis is enabled
-    if not config.get("advanced_analysis", {}).get("enabled", False):
-        logger.info("Advanced analysis is disabled in configuration, skipping")
-        return None
-    
-    # Create analyzer and run analysis
-    analyzer = AdvancedFluoroAnalysis(config.get("advanced_analysis", {}), logger)
-    results = analyzer.run_analysis(fluorescence_data, roi_masks, metrics_df, output_dir)
-    
-    return results

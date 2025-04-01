@@ -1,0 +1,220 @@
+# Configuration for Fluorescence Analysis Pipeline
+
+preprocessing:
+  correction_method: "polynomial_detrend"   # Photobleaching correction method
+  first_degree: 1                          # Linear for first stage
+  second_degree: 3                         # Cubic for second stage
+  polynomial_order: 3                      # 1 = linear detrend, >1 = nth-degree polynomial detrend
+  smoothing_sigma: 2.0                     # Gaussian smoothing sigma
+  use_gpu: false                           # Use GPU acceleration if available
+  apply_cnmf: false                        # Don't apply CNMF after correction
+  roi_detrend_degree: 1                    # Polynomial degree for ROI-specific detrending
+  generate_plot: true                      # generate plot
+  save_corrected_data: false               # Disable saving large corrected data files
+  save_intermediate_traces: true           # Save intermediate traces during preprocessing steps
+  trace_save_format: "csv"                 # Save traces as CSV to reduce file size
+ 
+  # Background removal options
+  background_removal:
+    enabled: true                          # Enable or disable background removal
+    method: "tophat"                      # Options: "uniform" or "tophat"
+    window_size: 3                         # Window size for background removal
+  
+  # Denoising options
+  denoise:
+    enabled: true                          # Enable or disable denoising
+    method: "median"                       # Options: gaussian, median, bilateral, anisotropic
+    params:
+      ksize: [5, 5]                        # Kernel size for gaussian, median filters
+      sigmaX: 1.5                          # Sigma for gaussian filter
+      ninter: 5                            # number of iterations. higher leads to more smoothing
+      kappa: 20                            # controls conduction of gradient. low value allows small gradients to block conduction.
+      gamma: 0.1                           # controls speed of diffusion
+      option: 1                            #which equation (1, 2, 3)
+      
+  
+  # Keep original parameters for other methods
+  cutoff_freq: 0.001                       # For lowpass_filter method
+  temporal_filter_order: 2                 # For lowpass_filter method
+  spatial_hp_sigma: 2.0                    # For lowpass_filter method
+  median_filter_size: 3                    # For noise reduction
+  use_roi_masks: true                      # Use ROI masks for CNMF-E initialization
+
+# Motion correction options
+motion_correction:
+  enabled: false                           # Enable or disable motion correction
+  method: "rigid"                          # Options: "rigid" or "nonrigid"
+  max_shift: 10                            # Maximum allowed shift in pixels 
+  patch_size: 50                           # Patch size for non-rigid correction
+  apply_before_photobleach: true           # Apply motion correction before photobleaching correction
+  save_motion_data: false                  # Disable saving motion-corrected H5 files
+
+roi_processing:
+  # Processing step control
+  steps:
+    extract_rois: true                     # Extract ROIs from zip file
+    roi_specific_detrend: true             # Apply ROI-specific detrending 
+    save_masks: true                       # Save ROI masks as visualizations
+    refine_rois: false                     # Refine ROIs with CNMF-E
+    refine_with_pnr: true                  # Refine ROIs using PNR analysis
+    subtract_background: true               # Perform background subtraction
+    save_masks_for_cnmf: false             # Disable saving CNMF component H5 files
+  save_intermediate_traces: true
+  trace_save_format: "csv"
+  
+  # PNR refinement settings
+  pnr_refinement:
+    noise_freq_cutoff: 0.4                # Cutoff frequency for signal/noise separation
+    min_pnr: 8.0                          # Minimum peak-to-noise ratio to keep an ROI
+    percentile_threshold: 99              # Percentile to use for peak detection
+    trace_smoothing: 1                    # Window size for smoothing signal traces (0 to disable)
+    auto_determine: false                 # Auto-determine optimal frequency cutoff
+    generate_plots: true                  # Generate diagnostic plots for signal/noise separation
+
+  # Optimization settings
+  optimization:
+    spatial_downsample: 2                 # Downsample spatially by 2x (adjust as needed)
+    use_float16: true                     # Use float16 instead of float32 
+    simplified_mode: true                 # Use simplified/faster processing
+  
+  # Background subtraction parameters
+  background:
+    method: "darkest_pixels"              # Options: darkest_pixels, roi_periphery, global_background, cnmf_background, lowpass_filter
+    min_background_area: 500              # Minimum pixel size for background region
+    background_dilation: 10                # Dilation of ROI masks to avoid using pixels close to ROIs
+    periphery_size: 2                     # Size of ROI periphery for local background
+    percentile: 0.2                       # For darkest_pixels method
+    median_filter_size: 19                 # For pixel noise reduction
+    dilation_size: 2                      # For expanding background mask
+    cutoff_freq: 0.001                    # For lowpass_filter method
+    filter_order: 2                       # For lowpass_filter method
+
+    # New slope correction parameters
+    correct_slope: true                 # Enable slope correction
+    slope_window: [0, 200]              # Frames to use for slope estimation
+    peak_prominence: 0.05               # For excluding peaks from baseline
+
+analysis:
+  frame_rate: 1.67                         # Acquisition frame rate in Hz
+  use_preprocessed_data: false
+
+  # Main photobleaching correction settings
+  photobleaching_correction:
+    # Common settings
+    default_extended_frames: [0, 200]
+    prominence: 0.05
+    
+    # Condition-specific settings
+    condition_specific:
+      "0um":
+        extended_frames: [50, 500]  # Different range for 0um condition
+        prominence: 0.05  # More sensitive peak detection
+      "10um":
+        extended_frames: [0, 200]
+      "25um":
+        extended_frames: [0, 200]
+  
+  # New section for evoked response detection
+  evoked_detection:
+    threshold: 0.1                         # Threshold for determining response boundaries (fraction of max)
+    min_duration: 3                        # Minimum duration for a valid response in frames
+  
+  # Baseline parameters for different conditions
+  condition_specific:
+    # For 0um (spontaneous activity only)
+    "0um":
+      baseline_frames: [0, 200]              # Range for baseline calculation
+      analysis_frames: [0, 580]              # Analyze the full recording (0-580)
+      active_threshold: 0.01                  # Threshold for determining if a spontaneous ROI is active
+      active_metric: "spont_peak_frequency"  # Use spontaneous frequency to determine activity
+      
+    # For 10um (evoked activity)
+    "10um":
+      baseline_frames: [0, 200]              # Range for baseline calculation
+      analysis_frames: [230, 580]            # Analyze only post-stimulus frames 
+      active_threshold: 0.02                  # Threshold for determining if an evoked ROI is active
+      active_metric: "max_df_f"        # Use peak amplitude to determine activity or 'max_df_f'
+      
+    # For 25um (evoked activity)
+    "25um":
+      baseline_frames: [0, 200]              # Range for baseline calculation
+      analysis_frames: [230, 580]            # Analyze only post-stimulus frames
+      active_threshold: 0.02                  # Threshold for determining if an evoked ROI is active
+      active_metric: "max_df_f"        # Use peak amplitude to determine activity
+  
+  # Default parameters (used if condition is not recognized)
+  baseline_frames: [0, 200]                # Default range for baseline calculation
+  analysis_frames: [230, 580]              # Default range for analysis
+  active_threshold: 0.1                    # Default threshold for activity
+  
+  # Baseline calculation parameters
+  baseline_method: "percentile"            # Options: "percentile", "mean", "min"
+  baseline_percentile: 8                   # Percentile to use when baseline_method is "percentile"
+  baseline_n_frames: 10                    # Number of frames to use when baseline_method is "mean"
+  
+  # Enable additional PCA metrics
+  calculate_spectral_features: true  # Enable spectral analysis
+  frequency_bands:
+    - [0.001, 0.01]  # Ultra low frequency
+    - [0.01, 0.1]    # Low frequency
+    - [0.1, 0.5]     # Mid frequency
+    - [0.5, 1.0]     # High frequency
+  
+  # Peak detection parameters maintained from original
+  peak_detection:
+    prominence: 0.05                       # Prominence for peak detection
+    width: 1                               # Minimum width to catch narrower peaks
+    distance: 5                           # Minimum samples between peaks
+    height: 0.06                           # Minimum height above baseline to be considered a peak
+    rel_height: 0.8                        # Relative height from peak to calculate width
+    edge_detection: true
+    edge_threshold: 0.06             # Minimum dF/F to consider as edge peak
+    edge_peak_frames: 30                 # Consider peaks within this many frames from edge
+    edge_rise_threshold: 0.005              # Number of std devs above mean to qualify
+
+  # New enhanced metrics settings
+  enhanced_metrics:
+    enabled: true
+    calculate_spectral: true  # Enable spectral analysis
+    frequency_bands: [[0.1, 1], [1, 5], [5, 10]]  # Hz bands for spectral power
+    burst_threshold: 0.5  # Time threshold to consider events as part of a burst
+  
+  # Spontaneous activity parameters
+  spontaneous_activity:
+    prominence: 0.03                       # Lower threshold for spontaneous activity detection
+    width: 1                               # Minimum peak width for spontaneous activity
+  
+  save_intermediate_traces: true
+  trace_save_format: "csv"
+  
+  event_detection:
+    threshold: 0.5                         # Standard deviations above baseline
+    min_duration: 2                        # Minimum event duration in frames
+    baseline_percentile: 10                # Percentile to use for baseline estimation
+  
+  # Quality control thresholds
+  qc_thresholds:
+    min_snr: 1.5                           # Minimum signal-to-noise ratio
+    max_baseline_var: 15.0                 # Maximum baseline variance (%)
+    min_event_count: 1                     # Minimum events per minute
+    max_motion_correlation: 0.6            # Maximum correlation with motion trace
+
+visualization:
+  roi_color_map: "viridis"                 # Colormap for ROI visualization
+  trace_color: "#1f77b4"                   # Color for fluorescence traces
+  event_color: "#d62728"                   # Color for detected events
+  save_individual_plots: true              # Save individual ROI plots
+  save_summary_plots: true                 # Save summary plots
+  plot_types:                              # Plot types to generate
+    - "roi_map"                            # ROI spatial map
+    - "trace_overlay"                      # All traces overlaid
+    - "event_summary"                      # Event rate summary
+    - "quality_metrics"                    # Quality control metrics
+
+advanced_analysis:
+  enabled: true                            # Enable advanced analysis
+  methods:
+    - "correlation"                        # ROI correlation analysis
+    - "clustering"                         # Hierarchical clustering of ROIs
+    - "population_activity"                # Population activity analysis
+  save_detailed_results: true              # Save comprehensive analysis results
